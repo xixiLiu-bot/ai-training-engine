@@ -54,6 +54,9 @@ evolver/
 │   ├── decide.py      ③ 决策器（规则版，成本阶梯）
 │   ├── evaluate.py    ④ 影子评估
 │   └── release.py     ⑤ 门控 + 回滚
+├── engine/            决策大脑（可选层）
+│   ├── llm_agent.py   大模型建议器：可切换后端，出错就降级
+│   └── policy.py      规则 + 大模型 → 过四道闸 → 最终动作
 ├── ledger/            预算账本（算力 / 标注 / Token 三重上限）
 └── config.py          所有阈值集中在这里
 
@@ -116,6 +119,45 @@ out/                   产物（不进仓库）
 
 写一个 `OfficialAdapter`（`evolver/adapters/dataset.py` 里已有占位），
 实现 `n_batches` / `get(batch_id)` 两个东西即可，`loop/` 一行都不用动。
+
+## 决策层：接不接大模型
+
+```bash
+python scripts/run_pipeline.py --llm none      # 只用规则（默认，保底）
+python scripts/run_pipeline.py --llm mock      # 假模型，验证链路
+python scripts/run_pipeline.py --llm pytrio    # 真模型（等额度）
+python scripts/run_pipeline.py --llm ollama    # 本地 ollama（开发替代）
+```
+
+三种模式实测结果**完全一致**（平均分 0.837）：
+
+| 模式 | 结果 | 说明 |
+|---|---|---|
+| `none` | 0.837 | 只有规则 |
+| `mock` | 0.837 | 建议被采纳或拦下，与规则一致 |
+| `mock_bad` | 0.837 | 9 次调用全失败 → 全部降级到规则 |
+
+**这就是设计目标：接了大模型，最坏情况也不低于纯规则。**
+
+### 四道闸（`engine/policy.py`）
+
+大模型的建议必须全过才算数，任何一条不过就退回规则：
+
+1. 能解析成合法 JSON
+2. 动作在白名单内
+3. **不许重复已被证明无效的便宜动作**（实测出来的：没这道闸，系统从 0.84 掉到 0.56）
+4. 已接近历史最好时不接受“重训”建议
+
+### 拿到 PyTRiO 额度后改哪两行
+
+`evolver/engine/llm_agent.py` 里的 `PRESETS["pytrio"]`：
+
+```python
+"base_url": "http://<赛题组给的地址>/v1",
+"model":    "Qwen3.8-27B",
+```
+
+其余代码不用动——协议是 OpenAI 兼容的。
 
 ## 待办
 

@@ -24,6 +24,8 @@ from evolver.adapters import dataset as ds          # noqa: E402
 from evolver.adapters import metric as mt          # noqa: E402
 from evolver.adapters import model as md           # noqa: E402
 from evolver.config import Config                  # noqa: E402
+from evolver.engine import llm_agent as la         # noqa: E402
+from evolver.engine import policy                  # noqa: E402
 from evolver.ledger.ledger import Ledger           # noqa: E402
 from evolver.loop import decide as dc              # noqa: E402
 from evolver.loop import diagnose as dg            # noqa: E402
@@ -107,6 +109,9 @@ def main():
     ap.add_argument("--dataset", default="synthetic", choices=["synthetic", "gas"])
     ap.add_argument("--model", default="logreg", choices=["logreg", "gbdt", "rf"])
     ap.add_argument("--out", default="out")
+    ap.add_argument("--llm", default="none",
+                    choices=["none", "mock", "mock_bad", "pytrio", "ollama"],
+                    help="决策层后端：mock 验证链路，pytrio/ollama 接真模型")
     args = ap.parse_args()
 
     cfg = Config()
@@ -124,6 +129,12 @@ def main():
 
     ref_score = metric.score(first.y, rel.current.predict(first.X))
     rel.current_score = ref_score
+
+    agent = la.build(args.llm)
+    if agent.enabled:
+        print(f"决策层：{args.llm}（{getattr(agent, 'model', '-')}）")
+    else:
+        print("决策层：规则引擎（未接大模型）")
 
     monitor = Monitor(first.X, cfg.psi_bins)
     ledger = Ledger(os.path.join(args.out, "decisions.jsonl"),
@@ -163,7 +174,7 @@ def main():
             history=[{"psi_mean": m["psi_mean"]} for m in monitor.history[:-1]],
         )
         history_read = state.read_history()
-        dec = dc.decide(state, diag, cfg)
+        dec = policy.decide(state, diag, cfg, agent)
 
         # ④ 执行 + 影子评估
         cand, shadow = None, None
@@ -190,6 +201,8 @@ def main():
         if dec["action"] != "do_nothing":
             ledger.charge(gpu_sec=dec["cost_sec"],
                           labels=len(batch.y) if dec["action"] == "refit_model" else 0)
+        if agent.enabled and isinstance(dec.get("llm"), dict):
+            ledger.charge(tokens=int(dec["llm"].get("tokens", 0)))
 
         # 门槛③ 的证据：一条完整记录
         ledger.log({
@@ -199,7 +212,14 @@ def main():
             "hypothesis": f"诊断={diag['kind']}；{dec['hypothesis']}",
             "experiment": {"action": dec["action"], "cost_sec": round(dec["cost_sec"], 3),
                            "diagnosis": diag["kind"],
-                           "psi_mean": round(rep["psi_mean"], 4)},
+                           "psi_mean": round(rep["psi_mean"], 4),
+                           "decider": dec.get("source", "rule")},
+            "llm": ({"action": dec["llm"].get("action"),
+                      "reason": dec["llm"].get("reason"),
+                      "model": dec["llm"].get("model"),
+                      "latency": dec["llm"].get("latency")}
+                     if isinstance(dec.get("llm"), dict) and "action" in dec["llm"] else None),
+            "note": dec.get("note"),
             "result": {"f1_baseline": round(f1_base, 4),
                        "f1_before": round(shadow["before"], 4) if shadow else None,
                        "f1_after": round(shadow["after"], 4) if shadow else None},
@@ -216,9 +236,10 @@ def main():
         })
 
         flag = {"accept": "✔ 上线", "rollback": "✕ 回滚", "noop": "—"}[rel_rec["decision"]]
+        src = {"rule": "规则", "rule+llm": "规则+LLM", "llm": "LLM"}[dec.get("source", "rule")]
         print(f"  b{b:02d} | 基线 {f1_base:.3f} | 系统 {f1_sys:.3f} | "
               f"PSI {rep['psi_max']:.2f} | {diag['kind']:9s} | "
-              f"{dec['action']:20s} | {flag}")
+              f"{dec['action']:20s} | {flag} | {src}")
 
         last_action, last_gain = dec["action"], gain
         if rel_rec["decision"] == "accept":
@@ -250,6 +271,8 @@ def main():
           f"系统 {np.mean([r['f1_system'] for r in rows]):.3f}")
     print(f"决策    动作 {n_act} 次 | 上线 {n_acc} 次 | 回滚 {n_roll} 次")
     print(f"账本    {ledger.summary()}")
+    if agent.enabled:
+        print(f"决策层  {agent.stats()}")
     print(f"产出    {args.out}/metrics.json  decisions.jsonl  curve.png")
     if n_act < 3:
         print("⚠ 有效动作不足 3 次，门槛③可能过不了——加大漂移强度或调低阈值")
