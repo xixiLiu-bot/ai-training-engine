@@ -36,18 +36,28 @@ def style_run(run, size=None, bold=None, color=None, font=HEI, italic=None):
         run.font.color.rgb = color
 
 
+CODE_INK = RGBColor(0x1F, 0x4E, 0x79)
+
+
 def add_rich(p, text, size=10.5, color=INK, bold=False, font=HEI, bold_color=None):
-    """把 **加粗** 语法解析成多个 run。"""
-    parts = text.split("**")
-    first = True
-    for i, seg in enumerate(parts):
-        if not seg:
+    """解析两种行内语法：**加粗** 与 `等宽代码`。"""
+    wrote = False
+    for k, chunk in enumerate(text.split("`")):
+        if not chunk:
             continue
-        is_bold = bold or (i % 2 == 1)
-        r = p.add_run(seg)
-        style_run(r, size, is_bold, bold_color if (is_bold and bold_color) else color, font)
-        first = False
-    if first:  # 空文本也要留一个 run，避免样式丢失
+        if k % 2 == 1:                       # 反引号内 → 等宽
+            style_run(p.add_run(chunk), max(size - 0.5, 7), bold, CODE_INK,
+                      "Consolas")
+            wrote = True
+            continue
+        for i, seg in enumerate(chunk.split("**")):   # 处理加粗
+            if not seg:
+                continue
+            is_bold = bold or (i % 2 == 1)
+            style_run(p.add_run(seg), size, is_bold,
+                      bold_color if (is_bold and bold_color) else color, font)
+            wrote = True
+    if not wrote:
         style_run(p.add_run(""), size, bold, color, font)
     return p
 
