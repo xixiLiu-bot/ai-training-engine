@@ -57,6 +57,8 @@ evolver/
 ├── engine/            决策大脑（可选层）
 │   ├── llm_agent.py   大模型建议器：可切换后端，出错就降级
 │   └── policy.py      规则 + 大模型 → 过四道闸 → 最终动作
+├── protocol/          评测协议（一问一答）
+│   └── batch_stream.py  LocalEvaluator / RemoteEvaluator(占位) / Submission
 ├── ledger/            预算账本（算力 / 标注 / Token 三重上限）
 └── config.py          所有阈值集中在这里
 
@@ -64,10 +66,48 @@ scripts/
 ├── make_data.py       合成漂移流
 └── run_pipeline.py    主流程 + 画图
 
+tests/                 回归测试（协议约束）
 skills/                技能库（可复用的处置经验）
 data/                  数据（不进仓库）
 out/                   产物（不进仓库）
 ```
+
+## 评测协议：一问一答（很重要）
+
+依据 11/6 说明会答疑：
+
+> B 包数据按批次下发，**必须先输出当前批次模型或不上线的判断，才能获取下一批数据**。
+
+所以评测不是「把数据流灌给你」，而是**一问一答**：
+
+```
+要第 1 批 → 拿到 → 处理 → 【交卷】 → 才给第 2 批 → ...
+```
+
+这条约束的真正作用是**从结构上堵死"偷看未来"**——你看不到后面的数据，
+就没法为了测试流调参。这正是评分里"是否过拟合"要防的事。
+
+代码里用 `LocalEvaluator` 强制执行，**违反会直接抛异常**：
+
+| 违规动作 | 结果 |
+|---|---|
+| 没交卷就要下一批 | `ProtocolViolation` |
+| 想看还没下发的批次 | `ProtocolViolation` |
+| decision 不是 deploy / keep | `ProtocolViolation` |
+
+```bash
+D:\anaconda\python.exe -m unittest tests.test_protocol -v
+# 6 个测试全过，其中一条专门验证"只加载真正下发过的批次"
+```
+
+跑完会打印协议结果：
+
+```
+协议    10 轮 | 部署 4 | 维持 6 | 违规 0
+```
+
+企业赛时把 `LocalEvaluator` 换成 `RemoteEvaluator`（等官方 SDK），
+上层闭环代码一行都不用动。
 
 ## 三个关键概念（别搞混）
 

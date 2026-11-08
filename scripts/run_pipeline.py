@@ -1,4 +1,4 @@
-﻿"""主流程：把「静态基线」和「自进化闭环」放在同一条漂移流上跑，对比两条曲线。
+"""主流程：把「静态基线」和「自进化闭环」放在同一条漂移流上跑，对比两条曲线。
 
     python scripts/run_pipeline.py
     python scripts/run_pipeline.py --dataset gas --model gbdt
@@ -32,24 +32,26 @@ from evolver.loop import diagnose as dg            # noqa: E402
 from evolver.loop import evaluate as ev            # noqa: E402
 from evolver.loop import release as rl             # noqa: E402
 from evolver.loop.monitor import Monitor, label_psi  # noqa: E402
+from evolver.protocol import LocalEvaluator, ProtocolViolation, Submission  # noqa: E402
 
 
-def recent_window(adapter, start: int, end: int, tau: float = 0.5):
+def recent_window(ev, start: int, end: int, tau: float = 0.5):
     """取最近几批拼起来，用于增量重训。
+
+    只从评测器**已下发**的批次里取——这是协议强制的，
+    直接去 adapter 捞未来批次会被 LocalEvaluator 拦下。
 
     关键：越新的批次权重越高（近似指数衰减）。
     否则历史里的旧规则会把模型往回拽，重训反而更差。
-    返回 (X, y, sample_weight)。
     """
     Xs, ys, ws = [], [], []
-    for b in range(start, end + 1):
-        if b < 1:
-            continue
-        batch = adapter.get(b)
+    for b, batch in ev.history(start, end):
         w = float(np.exp(-(end - b) / tau))
         Xs.append(batch.X)
         ys.append(batch.y)
         ws.append(np.full(len(batch.y), w))
+    if not Xs:
+        raise ProtocolViolation(f"没有可用的历史批次（{start}..{end}）")
     return np.vstack(Xs), np.concatenate(ys), np.concatenate(ws)
 
 
@@ -121,7 +123,10 @@ def main():
 
     print(f"数据集：{adapter.name}  批次：{adapter.n_batches}  模型：{args.model}")
 
-    first = adapter.get(1)
+    # ── 评测协议：一问一答 ──
+    # 没交卷就拿不到下一批；任何"偷看未来"的动作都会被直接拦下。
+    proto = LocalEvaluator(adapter, strict=True)
+    first = proto.next_batch()
     base = md.build(args.model, random_state=cfg.random_state).fit(first.X, first.y)
 
     baseline = base.clone()            # 冻结，永不更新
@@ -145,8 +150,20 @@ def main():
     last_update = 0
     last_action, last_gain = None, 0.0
 
-    for b in range(2, adapter.n_batches + 1):
-        batch = adapter.get(b)
+    # 第 1 轮：冷启动训练完，也要交一份判断
+    proto.submit(Submission(
+        round_no=1, batch_id=first.batch_id, decision="deploy",
+        model_version=rel.version,
+        reason="冷启动：以首批数据训练初始模型并部署",
+        predictions=rel.current.predict(first.X),
+        self_reported={"f1_system": round(ref_score, 4)},
+    ))
+
+    while True:
+        batch = proto.next_batch()
+        if batch is None:
+            break
+        b = batch.batch_id
         t0 = time.time()
 
         # 对照组：静态基线
@@ -183,7 +200,7 @@ def main():
         elif dec["action"] == "refit_model":
             # 只能用 b-1 及更早的数据训练（标签滞后），再到第 b 批上检验。
             # 用第 b 批的标签训练、又在第 b 批上验收 = 数据泄漏，分数会虚高。
-            Xw, yw, ww = recent_window(adapter, max(1, b - 4), b - 1)
+            Xw, yw, ww = recent_window(proto, max(1, b - 4), b - 1)
             cand = md.build(args.model, random_state=cfg.random_state).fit(Xw, yw, ww)
 
         if cand is not None:
@@ -241,6 +258,18 @@ def main():
               f"PSI {rep['psi_max']:.2f} | {diag['kind']:9s} | "
               f"{dec['action']:20s} | {flag} | {src}")
 
+        # ── 交卷：本批的判断必须交出去，才拿得到下一批 ──
+        proto.submit(Submission(
+            round_no=len(rows) + 1,
+            batch_id=b,
+            decision="deploy" if rel_rec["decision"] == "accept" else "keep",
+            model_version=rel.version,
+            reason=f"{dec['action']} -> {rel_rec['decision']}",
+            predictions=rel.current.predict(batch.X),
+            self_reported={"f1_system": round(f1_sys, 4),
+                           "f1_baseline": round(f1_base, 4)},
+        ))
+
         last_action, last_gain = dec["action"], gain
         if rel_rec["decision"] == "accept":
             last_update = b
@@ -251,7 +280,8 @@ def main():
 
     with open(os.path.join(args.out, "metrics.json"), "w", encoding="utf-8") as f:
         json.dump({"dataset": adapter.name, "model": args.model,
-                   "rows": rows, "ledger": ledger.summary()}, f,
+                   "rows": rows, "ledger": ledger.summary(),
+                   "protocol": proto.summary()}, f,
                   ensure_ascii=False, indent=2)
 
     concept_start = None
@@ -273,6 +303,9 @@ def main():
     print(f"账本    {ledger.summary()}")
     if agent.enabled:
         print(f"决策层  {agent.stats()}")
+    ps = proto.summary()
+    print(f"协议    {ps['rounds']} 轮 | 部署 {ps['deploy']} | 维持 {ps['keep']} | "
+          f"违规 {ps['violations']}")
     print(f"产出    {args.out}/metrics.json  decisions.jsonl  curve.png")
     if n_act < 3:
         print("⚠ 有效动作不足 3 次，门槛③可能过不了——加大漂移强度或调低阈值")
