@@ -32,6 +32,7 @@ from evolver.loop import diagnose as dg            # noqa: E402
 from evolver.loop import evaluate as ev            # noqa: E402
 from evolver.loop import release as rl             # noqa: E402
 from evolver.loop.monitor import Monitor, label_psi  # noqa: E402
+from evolver.memory import ExperienceTable  # noqa: E402
 from evolver.protocol import LocalEvaluator, ProtocolViolation, Submission  # noqa: E402
 
 
@@ -113,6 +114,8 @@ def main():
     ap.add_argument("--out", default="out")
     ap.add_argument("--psi-low", type=float, default=None,
                     help="稳定阈值（低于它不动）。不填用 config 默认值")
+    ap.add_argument("--no-memory", action="store_true",
+                    help="关闭经验表（用于 A/B 对照）")
     ap.add_argument("--psi-mid", type=float, default=None,
                     help="重型阈值（超过它直接重训）。不填用 config 默认值")
     ap.add_argument("--llm", default="none",
@@ -151,6 +154,7 @@ def main():
     else:
         print("决策层：规则引擎（未接大模型）")
 
+    memory = None if args.no_memory else ExperienceTable()
     monitor = Monitor(first.X, cfg.psi_bins)
     ledger = Ledger(os.path.join(args.out, "decisions.jsonl"),
                     cfg.budget_gpu_sec, cfg.budget_labels, cfg.budget_tokens)
@@ -201,7 +205,7 @@ def main():
             history=[{"psi_mean": m["psi_mean"]} for m in monitor.history[:-1]],
         )
         history_read = state.read_history()
-        dec = policy.decide(state, diag, cfg, agent)
+        dec = policy.decide(state, diag, cfg, agent, memory)
 
         # ④ 执行 + 影子评估
         cand, shadow = None, None
@@ -211,7 +215,9 @@ def main():
             # 只能用 b-1 及更早的数据训练（标签滞后），再到第 b 批上检验。
             # 用第 b 批的标签训练、又在第 b 批上验收 = 数据泄漏，分数会虚高。
             Xw, yw, ww = recent_window(proto, max(1, b - 4), b - 1)
-            cand = md.build(args.model, random_state=cfg.random_state).fit(Xw, yw, ww)
+            # 续训而不是重建：把“之前学到的”带过来。
+            # 但必须同时刷新标准化——否则权重配着旧尺度，反而被拽住（实测更差）。
+            cand = rel.current.clone().fit_continue(Xw, yw, ww, refresh_scaler=True)
 
         if cand is not None:
             shadow = ev.shadow(rel.current, cand, batch, metric)
@@ -263,7 +269,9 @@ def main():
         })
 
         flag = {"accept": "[OK] 上线", "rollback": "[X] 回滚", "noop": "-"}[rel_rec["decision"]]
-        src = {"rule": "规则", "rule+llm": "规则+LLM", "llm": "LLM"}[dec.get("source", "rule")]
+        src = {"rule": "规则", "rule+llm": "规则+LLM", "llm": "LLM",
+               "memory": "记忆", "memory+llm": "记忆+LLM"}.get(
+                   dec.get("source", "rule"), dec.get("source", "?"))
         print(f"  b{b:02d} | 基线 {f1_base:.3f} | 系统 {f1_sys:.3f} | "
               f"PSI {rep['psi_mean']:.2f} | {diag['kind']:9s} | "
               f"{dec['action']:20s} | {flag} | {src}")
@@ -279,6 +287,11 @@ def main():
             self_reported={"f1_system": round(f1_sys, 4),
                            "f1_baseline": round(f1_base, 4)},
         ))
+
+        # 把这次的战绩写进经验表（下一轮同类漂移可以直接查）
+        if memory is not None:
+            memory.record(diag["kind"], dec["action"], gain, dec["cost_sec"],
+                          rel_rec["decision"])
 
         last_action, last_gain = dec["action"], gain
         if rel_rec["decision"] == "accept":
@@ -313,6 +326,11 @@ def main():
     print(f"账本    {ledger.summary()}")
     if agent.enabled:
         print(f"决策层  {agent.stats()}")
+    if memory is not None:
+        memory.print_summary()
+        memory.to_json(os.path.join(args.out, "experience.json"))
+        print()
+
     ps = proto.summary()
     print(f"协议    {ps['rounds']} 轮 | 部署 {ps['deploy']} | 维持 {ps['keep']} | "
           f"违规 {ps['violations']}")

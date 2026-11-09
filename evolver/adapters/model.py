@@ -56,6 +56,36 @@ class SklearnModelAdapter:
             return self.est.predict_proba(self.scaler.transform(X))
         raise AttributeError(f"{self.kind} 不支持 predict_proba")
 
+    # ---- 续训（warm start）：把“之前学到的”带到下一轮 ----
+    def fit_continue(self, X, y, sample_weight=None, refresh_scaler: bool = False):
+        """在当前权重的基础上继续训练，而不是从零重来。
+
+        这就是“训练后的经验可以用到之后的训练”：
+        模型本身就是经验的载体，重建等于把学过的全丢了。
+
+        注意：默认**不刷新标准化**——因为权重是配着旧尺度训出来的，
+        换了尺子权重就失配。需要换尺度时，应该先 refresh_normalization 再续训。
+        """
+        if refresh_scaler:
+            self.scaler.fit(X)
+        Xs = self.scaler.transform(X)
+
+        est = self.est
+        if hasattr(est, "warm_start"):
+            try:
+                est.set_params(warm_start=True)
+            except Exception:
+                pass
+
+        if sample_weight is not None:
+            try:
+                est.fit(Xs, y, sample_weight=sample_weight)
+            except TypeError:
+                est.fit(Xs, y)
+        else:
+            est.fit(Xs, y)
+        return self
+
     # ---- 便宜的更新手段 ----
     def refresh_normalization(self, X):
         """只重算标准化统计量（均值/方差），模型权重不动。成本≈0。"""

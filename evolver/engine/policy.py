@@ -1,32 +1,50 @@
-"""把「规则引擎」和「大模型建议」合成一个决策出口。
+"""把「规则引擎」「经验记忆」「大模型建议」合成一个决策出口。
 
-顺序固定：先规则，再问大模型，最后过三道闸。
+优先级（后面的可以覆盖前面的，但都要过闸）：
 
-    ┌─────────┐
-    │ 规则引擎 │  ← 永远先算一遍，作为保底与对照
-    └────┬────┘
-         │ rule_action
-    ┌────▼─────┐
-    │ 大模型建议 │  ← 可选；超时/报错/胡说 → 返回 None
-    └────┬─────┘
-         │ suggestion
-    ┌────▼──────────────────┐
-    │ 三道闸：白名单 / 预算 / 可解析 │
-    └────┬──────────────────┘
-         │
-    采纳 or 降级到 rule_action
+    规则引擎   → 永远先算，作为保底
+    经验记忆   → 有足够证据时，可以改判（免费，先用）
+    大模型     → 最后提建议，过四道闸才采纳
+
+任何一层出问题，都退回上一层，永远不会卡死。
 """
 from __future__ import annotations
 
 from ..loop import decide as dc
 
 
-def decide(state, diagnosis, cfg, agent=None) -> dict:
-    """返回 {action, hypothesis, reason, cost_sec, source, llm}。"""
+def decide(state, diagnosis, cfg, agent=None, memory=None) -> dict:
+    """返回 {action, hypothesis, reason, cost_sec, source, llm, memory}。"""
     rule = dc.decide(state, diagnosis, cfg)
+    base = {**rule, "source": "rule", "llm": None, "memory": None}
 
+    # ── 第二层：经验记忆 ──
+    # 保留 20% 的探索：不能因为一次成功就锁死，否则会陷在过时的经验里
+    explore = (memory is not None and getattr(memory, "rng", None) is not None
+               and memory.rng.random() < memory.epsilon)
+    if memory is not None and not explore:
+        best = memory.best_action(diagnosis["kind"], list(dc.ACTIONS))
+        if best is not None:
+            act, gpc = best
+            cur = memory.gain_per_cost_of(diagnosis["kind"], rule["action"])
+            # 只有明显更好才改判，避免早期一两次实验就把系统带偏
+            if act != rule["action"] and (cur is None or gpc >= cur * memory.advantage):
+                base = {
+                    "action": act,
+                    "hypothesis": f"经验表显示：{diagnosis['kind']} 类漂移下 {act} 更划算",
+                    "reason": (f"经验：{act} 单位成本增益 {gpc:.2f}"
+                               + (f"，规则选的 {rule['action']} 只有 {cur:.2f}" if cur else "")),
+                    "cost_sec": dc.COST[act],
+                    "source": "memory",
+                    "llm": None,
+                    "memory": {"chosen": act, "gain_per_cost": round(gpc, 3),
+                               "rule_action": rule["action"],
+                               "rule_gain_per_cost": None if cur is None else round(cur, 3)},
+                }
+
+    # ── 第三层：大模型（在记忆的基础上再建议） ──
     if agent is None or not getattr(agent, "enabled", False):
-        return {**rule, "source": "rule", "llm": None}
+        return base
 
     catalog = {k: {"cost_sec": v} for k, v in dc.COST.items()}
     state_dict = {
@@ -39,41 +57,32 @@ def decide(state, diagnosis, cfg, agent=None) -> dict:
         "last_gain": state.last_gain,
     }
 
-    sug = agent.suggest(state_dict, diagnosis, catalog, rule["action"])
+    sug = agent.suggest(state_dict, diagnosis, catalog, base["action"])
 
-    # 闸一：没给建议 / 给的是错误信息
     if not sug or "action" not in sug:
-        return {**rule, "source": "rule", "llm": sug,
-                "note": "大模型不可用，已降级到规则"}
+        return {**base, "llm": sug, "note": "大模型不可用，已降级"}
 
-    # 闸二：动作必须真的存在（agent 内部已校验，这里再兜一层）
     if sug["action"] not in dc.COST:
-        return {**rule, "source": "rule", "llm": sug,
-                "note": f"动作 {sug['action']} 不在白名单，已拒绝"}
+        return {**base, "llm": sug, "note": f"动作 {sug['action']} 不在白名单，已拒绝"}
 
-    # 闸三：不许重复“已经被证明无效”的便宜动作
-    # 这是实测出来的：只靠白名单和预算，大模型会一直选 refresh，
-    # 而 refresh 早就不管用了，结果把一个 0.84 的系统拖到 0.56。
     if (sug["action"] == "refresh_normalization"
             and state.last_action == "refresh_normalization"
             and state.last_gain < cfg.min_gain):
-        return {**rule, "source": "rule", "llm": sug,
+        return {**base, "llm": sug,
                 "note": f"上次校准仅 {state.last_gain:+.3f}，拒绝重复无效动作"}
 
-    # 闸四：预算（贵动作要额外确认，避免被大模型带飞）
     if sug["action"] == "refit_model" and state.current_score >= state.best_score - 0.01:
-        return {**rule, "source": "rule", "llm": sug,
-                "note": "当前已接近历史最好，拒绝大模型的重训建议"}
+        return {**base, "llm": sug, "note": "已接近历史最好，拒绝大模型的重训建议"}
 
-    if sug["action"] == rule["action"]:
-        return {**rule, "source": "rule+llm", "llm": sug,
-                "note": "大模型与规则一致"}
+    if sug["action"] == base["action"]:
+        return {**base, "llm": sug,
+                "source": base["source"] + "+llm",
+                "note": "大模型与当前判断一致"}
 
-    return {
-        "action": sug["action"],
-        "hypothesis": f"大模型建议：{sug.get('reason', '')}",
-        "reason": f"采纳大模型建议（规则原判 {rule['action']}）",
-        "cost_sec": dc.COST[sug["action"]],
-        "source": "llm",
-        "llm": sug,
-    }
+    return {**base,
+            "action": sug["action"],
+            "hypothesis": f"大模型建议：{sug.get('reason', '')}",
+            "reason": f"采纳大模型（原判 {base['action']}，来源 {base['source']}）",
+            "cost_sec": dc.COST[sug["action"]],
+            "source": "llm",
+            "llm": sug}
