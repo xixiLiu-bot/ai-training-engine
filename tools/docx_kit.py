@@ -383,3 +383,35 @@ def kv_table(doc, rows, widths=(3.0, 13.2), size=9.5, label_fill="F1F5F9"):
     no_split(t)
     doc.add_paragraph().paragraph_format.space_after = Pt(2)
     return t
+
+def add_hyperlink(paragraph, url, text, size=9, color=RGBColor(0x1D, 0x4E, 0xD8), font=HEI):
+    """在段落里插入一个可点击的超链接。"""
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.oxml import OxmlElement as _OE
+
+    part = paragraph.part
+    r_id = part.relate_to(url, RT.HYPERLINK, is_external=True)
+    hl = _OE("w:hyperlink")
+    hl.set(qn("r:id"), r_id)
+
+    run = _OE("w:r")
+    rPr = _OE("w:rPr")
+    rFonts = _OE("w:rFonts")
+    rFonts.set(qn("w:ascii"), font)
+    rFonts.set(qn("w:hAnsi"), font)
+    rFonts.set(qn("w:eastAsia"), font)
+    rPr.append(rFonts)
+    c = _OE("w:color")
+    c.set(qn("w:val"), "%02X%02X%02X" % (color[0], color[1], color[2]))
+    rPr.append(c)
+    u = _OE("w:u"); u.set(qn("w:val"), "single"); rPr.append(u)
+    sz = _OE("w:sz"); sz.set(qn("w:val"), str(int(size * 2))); rPr.append(sz)
+    run.append(rPr)
+
+    t = _OE("w:t")
+    t.set(qn("xml:space"), "preserve")
+    t.text = text
+    run.append(t)
+    hl.append(run)
+    paragraph._p.append(hl)
+    return paragraph
