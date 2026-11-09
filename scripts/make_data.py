@@ -92,7 +92,7 @@ def main():
             X=X, y=y, scale=scale, offset=offset, concept_flag=concept_flag,
         )
         print(f"  batch_{b:02d}: n={len(y)} scale={scale:.2f} "
-              f"offset={offset:.2f}σ 换类={concept_flag:.0f}")
+              f"offset={offset:.2f}std 换类={concept_flag:.0f}")
 
     print(f"\n完成：{args.batches} 个批次写入 {args.out}/")
 

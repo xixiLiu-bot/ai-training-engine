@@ -252,10 +252,10 @@ def main():
             "action": dec["action"], "decision": rel_rec["decision"],
         })
 
-        flag = {"accept": "✔ 上线", "rollback": "✕ 回滚", "noop": "—"}[rel_rec["decision"]]
+        flag = {"accept": "[OK] 上线", "rollback": "[X] 回滚", "noop": "-"}[rel_rec["decision"]]
         src = {"rule": "规则", "rule+llm": "规则+LLM", "llm": "LLM"}[dec.get("source", "rule")]
         print(f"  b{b:02d} | 基线 {f1_base:.3f} | 系统 {f1_sys:.3f} | "
-              f"PSI {rep['psi_max']:.2f} | {diag['kind']:9s} | "
+              f"PSI {rep['psi_mean']:.2f} | {diag['kind']:9s} | "
               f"{dec['action']:20s} | {flag} | {src}")
 
         # ── 交卷：本批的判断必须交出去，才拿得到下一批 ──
@@ -308,7 +308,7 @@ def main():
           f"违规 {ps['violations']}")
     print(f"产出    {args.out}/metrics.json  decisions.jsonl  curve.png")
     if n_act < 3:
-        print("⚠ 有效动作不足 3 次，门槛③可能过不了——加大漂移强度或调低阈值")
+        print("[!] 有效动作不足 3 次，门槛③可能过不了——加大漂移强度或调低阈值")
 
 
 if __name__ == "__main__":
