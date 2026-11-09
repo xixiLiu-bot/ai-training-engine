@@ -1,0 +1,70 @@
+{
+  "dataset": "xjtu_bearing[11-15]",
+  "model": "logreg",
+  "rows": [
+    {
+      "batch": 2,
+      "f1_baseline": 0.1667,
+      "f1_system": 0.5549,
+      "psi_max": 12.432,
+      "psi_mean": 5.2176,
+      "label_shift": 0.0,
+      "diagnosis": "covariate",
+      "action": "refresh_normalization",
+      "decision": "accept"
+    },
+    {
+      "batch": 3,
+      "f1_baseline": 0.167,
+      "f1_system": 0.4813,
+      "psi_max": 12.432,
+      "psi_mean": 2.2546,
+      "label_shift": 0.0,
+      "diagnosis": "covariate",
+      "action": "refresh_normalization",
+      "decision": "accept"
+    },
+    {
+      "batch": 4,
+      "f1_baseline": 0.3813,
+      "f1_system": 0.3832,
+      "psi_max": 10.1965,
+      "psi_mean": 2.0249,
+      "label_shift": 0.0,
+      "diagnosis": "covariate",
+      "action": "refresh_normalization",
+      "decision": "accept"
+    },
+    {
+      "batch": 5,
+      "f1_baseline": 0.1667,
+      "f1_system": 0.1849,
+      "psi_max": 12.432,
+      "psi_mean": 5.739,
+      "label_shift": 0.0,
+      "diagnosis": "covariate",
+      "action": "refit_model",
+      "decision": "rollback"
+    }
+  ],
+  "ledger": {
+    "used": {
+      "gpu_sec": 2.15,
+      "labels": 114,
+      "tokens": 0
+    },
+    "budget": {
+      "gpu_sec": 600.0,
+      "labels": 30000,
+      "tokens": 0
+    },
+    "n_actions": 4
+  },
+  "protocol": {
+    "rounds": 5,
+    "deploy": 4,
+    "keep": 1,
+    "violations": 0,
+    "violation_detail": []
+  }
+}

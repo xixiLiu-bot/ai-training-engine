@@ -1,0 +1,52 @@
+{
+  "records": [
+    {
+      "drift_kind": "concept_inferred",
+      "action": "refit_model",
+      "n": 1,
+      "total_gain": 0.0756,
+      "total_cost": 2.0,
+      "wins": 1,
+      "losses": 0,
+      "recent": [
+        "accept"
+      ],
+      "gain_per_cost": 0.0378,
+      "avg_gain": 0.0756
+    },
+    {
+      "drift_kind": "covariate",
+      "action": "refresh_normalization",
+      "n": 5,
+      "total_gain": 0.6037,
+      "total_cost": 0.25,
+      "wins": 4,
+      "losses": 1,
+      "recent": [
+        "accept",
+        "accept",
+        "accept",
+        "rollback",
+        "accept"
+      ],
+      "gain_per_cost": 2.415,
+      "avg_gain": 0.1207
+    },
+    {
+      "drift_kind": "covariate",
+      "action": "refit_model",
+      "n": 3,
+      "total_gain": -0.3616,
+      "total_cost": 6.0,
+      "wins": 1,
+      "losses": 2,
+      "recent": [
+        "rollback",
+        "accept",
+        "rollback"
+      ],
+      "gain_per_cost": -0.0603,
+      "avg_gain": -0.1205
+    }
+  ]
+}
