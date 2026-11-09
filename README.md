@@ -11,12 +11,21 @@
 监测漂移 → 归因诊断 → 决策 → 执行 + 影子评估 → 上线 / 回滚
 ```
 
-跑一遍：
+## 跑一遍
+
+**最简单：双击项目根目录的 `run.bat`** —— 自动跑完，最后会弹出曲线图。
+
+或者用命令行（在项目根目录）：
 
 ```bash
 python scripts/make_data.py        # 造一条会漂移的数据流（10 批）
 python scripts/run_pipeline.py     # 静态基线 vs 自进化闭环
 ```
+
+> `python` 必须指向 Anaconda（带 sklearn 的那个）。
+> 用 `where python` 确认，应该是 `D:\anaconda\python.exe`。
+> 如果报 `ModuleNotFoundError: sklearn`，说明用错了 Python，改成
+> `D:\anaconda\python.exe scripts\run_pipeline.py`。
 
 产出在 `out/`：
 
