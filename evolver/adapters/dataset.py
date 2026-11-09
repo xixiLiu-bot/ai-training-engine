@@ -126,11 +126,72 @@ class OfficialAdapter(DatasetAdapter):
         )
 
 
+# ─────────────────────────────────────────────────────────────
+# 3) XJTU-SY 轴承退化：A 包里「轴承退化识别」的公开替代
+# ─────────────────────────────────────────────────────────────
+class XjtuAdapter(DatasetAdapter):
+    """XJTU-SY 轴承跑脱数据集（15 个轴承跑到失效）。
+
+    批次顺序按工况排列：35Hz12kN → 37.5Hz11kN → 40Hz10kN。
+    工况变化本身就是漂移，所以这条流同时含「跨个体」和「跨工况」两种偏移。
+
+    每批 = 一个轴承的整个寿命，标签 = 退化阶段（健康/退化中/临近失效）。
+    原始 CSV 先经 scripts/prepare_xjtu.py 压成 16 维时域特征。
+    """
+
+    def __init__(self, root: str = "data/xjtu"):
+        files = sorted(glob.glob(os.path.join(root, "batch_*.npz")))
+        if not files:
+            raise FileNotFoundError(
+                f"没找到 {root} 下的 batch_*.npz。先跑：python scripts/prepare_xjtu.py")
+        self._files = files
+        self.name = "xjtu_bearing"
+        self.n_batches = len(files)
+        with np.load(files[0]) as d:
+            self.feature_names = [f"f{i}" for i in range(d["X"].shape[1])]
+
+    def get(self, batch_id: int) -> Batch:
+        with np.load(self._files[batch_id - 1]) as d:
+            meta = {"source": self.name, "n_samples": int(len(d["y"]))}
+            if "condition" in d.files:
+                meta["condition"] = str(d["condition"])
+            if "bearing" in d.files:
+                meta["bearing"] = str(d["bearing"])
+            return Batch(batch_id, d["X"], d["y"], meta)
+
+
+# ─────────────────────────────────────────────────────────────
+# 4) 子集视图：把一个适配器的某一段批次切出来（训练/测试切分用）
+# ─────────────────────────────────────────────────────────────
+class SubsetAdapter(DatasetAdapter):
+    """只暴露 inner 适配器的 start..end 这几批。
+
+    迁移实验要「前 10 个轴承攒经验、后 5 个轴承验证」，
+    用这个视图切，闭环代码一行都不用改。
+    """
+
+    def __init__(self, inner: DatasetAdapter, start: int = 1, end: int | None = None):
+        self._inner = inner
+        last = inner.n_batches if end is None else min(end, inner.n_batches)
+        if start < 1 or start > last:
+            raise ValueError(f"批次范围非法：{start}..{last}（共 {inner.n_batches} 批）")
+        self.start = start
+        self.end = last
+        self.n_batches = last - start + 1
+        self.name = f"{inner.name}[{start}-{last}]"
+        self.feature_names = inner.feature_names
+
+    def get(self, batch_id: int) -> Batch:
+        b = self._inner.get(self.start + batch_id - 1)
+        return Batch(batch_id, b.X, b.y, {**(b.meta or {}), "orig_batch": b.batch_id})
+
+
 def build(kind: str = "synthetic", **kwargs) -> DatasetAdapter:
     """工厂：按名字拿适配器。"""
     table = {
         "synthetic": SyntheticDriftAdapter,
         "gas": GasSensorAdapter,
+        "xjtu": XjtuAdapter,
     }
     if kind not in table:
         raise ValueError(f"未知数据集 '{kind}'，可选：{list(table)}")

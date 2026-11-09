@@ -109,9 +109,16 @@ def plot(rows: list[dict], path: str, concept_start: int | None = None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", default="synthetic", choices=["synthetic", "gas"])
+    ap.add_argument("--dataset", default="synthetic",
+                    choices=["synthetic", "gas", "xjtu"])
     ap.add_argument("--model", default="logreg", choices=["logreg", "gbdt", "rf"])
     ap.add_argument("--out", default="out")
+    ap.add_argument("--start", type=int, default=None,
+                    help="只跑第 start 批之后（训练/测试切分用）")
+    ap.add_argument("--end", type=int, default=None,
+                    help="只跑到第 end 批为止")
+    ap.add_argument("--load-experience", default=None,
+                    help="加载一份已有经验表（迁移实验用）")
     ap.add_argument("--psi-low", type=float, default=None,
                     help="稳定阈值（低于它不动）。不填用 config 默认值")
     ap.add_argument("--no-memory", action="store_true",
@@ -131,6 +138,8 @@ def main():
     if args.psi_mid is not None:
         cfg.psi_mid = args.psi_mid
     adapter = ds.build(args.dataset)
+    if args.start is not None or args.end is not None:
+        adapter = ds.SubsetAdapter(adapter, args.start or 1, args.end)
     metric = mt.build("f1_macro")
     os.makedirs(args.out, exist_ok=True)
 
@@ -154,7 +163,13 @@ def main():
     else:
         print("决策层：规则引擎（未接大模型）")
 
-    memory = None if args.no_memory else ExperienceTable()
+    if args.no_memory:
+        memory = None
+    elif args.load_experience:
+        memory = ExperienceTable.load_json(args.load_experience)
+        print(f"已加载经验表：{args.load_experience}（{len(memory.records)} 条记录）")
+    else:
+        memory = ExperienceTable()
     monitor = Monitor(first.X, cfg.psi_bins)
     ledger = Ledger(os.path.join(args.out, "decisions.jsonl"),
                     cfg.budget_gpu_sec, cfg.budget_labels, cfg.budget_tokens)

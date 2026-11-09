@@ -144,3 +144,22 @@ class ExperienceTable:
             print(f"  {d['drift_kind']:<18}{d['action']:<24}{d['n']:>5}"
                   f"{d['total_gain']:>+10.3f}{d['total_cost']:>10.2f}"
                   f"{d['gain_per_cost']:>13.2f}")
+
+    @classmethod
+    def load_json(cls, path: str, **kwargs) -> "ExperienceTable":
+        """从盘上读回一份经验（迁移实验用：把 A 数据集学到的带过来）。"""
+        import os
+        table = cls(**kwargs)
+        if not os.path.exists(path):
+            return table
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        for d in data.get("records", []):
+            rec = Record(drift_kind=d["drift_kind"], action=d["action"],
+                         n=d.get("n", 0), total_gain=d.get("total_gain", 0.0),
+                         total_cost=d.get("total_cost", 0.0),
+                         wins=d.get("wins", 0), losses=d.get("losses", 0))
+            rec.recent = ["accept"] * rec.wins + ["rollback"] * rec.losses
+            rec.recent = rec.recent[-5:]
+            table.records[table._key(rec.drift_kind, rec.action)] = rec
+        return table
