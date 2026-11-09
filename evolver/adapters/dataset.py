@@ -82,38 +82,32 @@ class SyntheticDriftAdapter(DatasetAdapter):
 # 2) UCI 气体传感器漂移数据集：真实的物理漂移
 # ─────────────────────────────────────────────────────────────
 class GasSensorAdapter(DatasetAdapter):
-    """UCI Gas Sensor Array Drift（batch1.csv .. batch10.csv）。
+    """UCI Gas Sensor Array Drift（官方 A 包三个数据集之一）。
 
-    真实漂移来源：传感器在数月内老化。
-    标签列通常是最后一列。
+    真实漂移来源：传感器在数月内老化，同一气体的读数持续偏移。
+    原始文件是 libsvm 稀疏格式（.dat），先用 scripts/prepare_gas.py
+    转成 batch_XX.npz，运行时直接读，加载是毫秒级。
+
+    批次顺序就是时间顺序：batch1 最早、batch10 最晚。
     """
 
-    def __init__(self, root: str = "data/raw/gas_drift"):
+    def __init__(self, root: str = "data/gas"):
         files = sorted(
-            glob.glob(os.path.join(root, "**", "batch*.csv"), recursive=True),
+            glob.glob(os.path.join(root, "batch_*.npz")),
             key=lambda p: int("".join(c for c in os.path.basename(p) if c.isdigit())),
         )
         if not files:
-            raise FileNotFoundError(f"没找到 {root} 下的 batch*.csv")
+            raise FileNotFoundError(
+                f"没找到 {root} 下的 batch_*.npz。先跑：python scripts/prepare_gas.py")
         self._files = files
         self.name = "gas_sensor_drift"
         self.n_batches = len(files)
-        with open(files[0], encoding="utf-8", errors="ignore") as f:
-            head = f.readline().strip().split(",")
-        self._has_header = not head[0].replace(".", "").isdigit()
-        self.feature_names = [f"s{i}" for i in range(len(head) - 1)]
+        with np.load(files[0]) as d:
+            self.feature_names = [f"s{i}" for i in range(d["X"].shape[1])]
 
     def get(self, batch_id: int) -> Batch:
-        import pandas as pd
-
-        df = pd.read_csv(self._files[batch_id - 1],
-                         header=0 if self._has_header else None)
-        y = df.iloc[:, -1].to_numpy()
-        X = df.iloc[:, :-1].to_numpy(dtype=float)
-        # 标签若为字符串（如 "Ethanol"）则编码成整数
-        if y.dtype.kind in "OUS":
-            _, y = np.unique(y, return_inverse=True)
-        return Batch(batch_id, X, y.astype(int), {"source": self.name})
+        with np.load(self._files[batch_id - 1]) as d:
+            return Batch(batch_id, d["X"], d["y"], {"source": self.name})
 
 
 # ─────────────────────────────────────────────────────────────

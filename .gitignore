@@ -38,3 +38,6 @@ release/
 # ---- 与本项目无关的本地脚本/导出 ----
 inspect_registration.py
 registration_dump.txt
+
+# ---- 对比实验产物 ----
+out*/

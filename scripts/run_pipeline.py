@@ -111,12 +111,22 @@ def main():
     ap.add_argument("--dataset", default="synthetic", choices=["synthetic", "gas"])
     ap.add_argument("--model", default="logreg", choices=["logreg", "gbdt", "rf"])
     ap.add_argument("--out", default="out")
+    ap.add_argument("--psi-low", type=float, default=None,
+                    help="稳定阈值（低于它不动）。不填用 config 默认值")
+    ap.add_argument("--psi-mid", type=float, default=None,
+                    help="重型阈值（超过它直接重训）。不填用 config 默认值")
     ap.add_argument("--llm", default="none",
                     choices=["none", "mock", "mock_bad", "pytrio", "ollama"],
                     help="决策层后端：mock 验证链路，pytrio/ollama 接真模型")
     args = ap.parse_args()
 
     cfg = Config()
+    # 阈值必须按数据集标定：合成数据 PSI 0.1~0.3，真实气体传感器 1~4，
+    # 用同一套绝对值必然失效（要么从不动作，要么永远走最贵那档）。
+    if args.psi_low is not None:
+        cfg.psi_low = args.psi_low
+    if args.psi_mid is not None:
+        cfg.psi_mid = args.psi_mid
     adapter = ds.build(args.dataset)
     metric = mt.build("f1_macro")
     os.makedirs(args.out, exist_ok=True)
