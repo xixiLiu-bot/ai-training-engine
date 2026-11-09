@@ -262,3 +262,42 @@ efit_model 现在是**从当前模型接着训**，不是重建。实测三种�
 | **续训 + 刷新标准化** | **75.0 ms / 0.8049** |
 
 **必须同时刷新标准化**——否则权重配着旧尺度，反而被拽住，又慢又差。
+
+## 决策大脑：接了 Pydantic AI 框架
+
+evolver/engine/llm_agent.py 现在有两条路径：
+
+| 路径 | 说明 |
+|---|---|
+| 手写 HTTP + 正则解析 | 兼容性最好，保留 |
+| **Pydantic AI 框架** | 结构化输出，白名单从“事后检查”变成“结构约束” |
+
+`python
+class Decision(BaseModel):
+    action: Literal[do_nothing, refresh_normalization, refit_model]
+    reason: str
+`
+
+模型吐出不存在的动作，框架直接拒绝并重试；重试还不行就抛异常，被我们降级到规则。
+
+### 后端一览
+
+`ash
+--llm none            # 纯规则（默认，保底）
+--llm pydantic-test   # 框架 + TestModel（离线验证链路）
+--llm pydantic-sim    # 框架 + 模拟模型（能给出合理决策）
+--llm pydantic        # 框架 + 真模型（改 base_url 即可接 Qwen）
+--llm pytrio          # 手写 HTTP 直连
+--llm ollama          # 本地 ollama
+`
+
+### 实测：三种决策层的对比
+
+| 决策层 | 系统 F1 | 说明了什么 |
+|---|---|---|
+| 纯规则 | 0.740 | 能用 |
+| 框架 + TestModel | **0.320（=基线）** | **假模型不会思考 → 系统退化成静态基线** |
+| 框架 + 模拟模型 | 0.752 | 框架路径能跑出好结果 |
+
+第二行值得记住：**接入一个大模型不等于变强**。TestModel 永远返回“不动”，
+系统就一次也不更新，分数掉回基线。**关键在于模型的判断力，不在于有没有接。**

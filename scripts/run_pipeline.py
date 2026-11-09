@@ -126,7 +126,8 @@ def main():
     ap.add_argument("--psi-mid", type=float, default=None,
                     help="重型阈值（超过它直接重训）。不填用 config 默认值")
     ap.add_argument("--llm", default="none",
-                    choices=["none", "mock", "mock_bad", "pytrio", "ollama"],
+                    choices=["none", "mock", "mock_bad", "pydantic-test",
+                             "pydantic-sim", "pydantic", "pytrio", "ollama"],
                     help="决策层后端：mock 验证链路，pytrio/ollama 接真模型")
     args = ap.parse_args()
 
