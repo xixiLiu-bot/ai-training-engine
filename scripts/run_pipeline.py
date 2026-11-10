@@ -31,6 +31,7 @@ from evolver.loop import decide as dc              # noqa: E402
 from evolver.loop import diagnose as dg            # noqa: E402
 from evolver.loop import evaluate as ev            # noqa: E402
 from evolver.loop import release as rl             # noqa: E402
+from evolver.loop.calibrate import ThresholdCalibrator  # noqa: E402
 from evolver.loop.monitor import Monitor, label_psi  # noqa: E402
 from evolver.memory import ExperienceTable  # noqa: E402
 from evolver.protocol import LocalEvaluator, ProtocolViolation, Submission  # noqa: E402
@@ -118,6 +119,10 @@ def main():
                     help="只跑第 start 批之后（训练/测试切分用）")
     ap.add_argument("--end", type=int, default=None,
                     help="只跑到第 end 批为止")
+    ap.add_argument("--no-calibrate", action="store_true",
+                    help="关闭阈值自标定（用手工给的 --psi-low/--psi-mid）")
+    ap.add_argument("--calib-batches", type=int, default=2,
+                    help="用前几批观察 PSI 来标定阈值")
     ap.add_argument("--load-experience", default=None,
                     help="加载一份已有经验表（迁移实验用）")
     ap.add_argument("--psi-low", type=float, default=None,
@@ -174,6 +179,11 @@ def main():
         print(f"已加载经验表：{args.load_experience}（{len(memory.records)} 条记录）")
     else:
         memory = ExperienceTable()
+
+    # 阈值自标定：不手工给 --psi-low 时，用前几批的 PSI 自己定
+    calib = None
+    if not args.no_calibrate and args.psi_low is None:
+        calib = ThresholdCalibrator(warmup=args.calib_batches)
     monitor = Monitor(first.X, cfg.psi_bins)
     ledger = Ledger(os.path.join(args.out, "decisions.jsonl"),
                     cfg.budget_gpu_sec, cfg.budget_labels, cfg.budget_tokens)
@@ -204,6 +214,13 @@ def main():
 
         # ① 监测
         rep = monitor.check(batch.X, cfg.psi_low)
+
+        # 阈值自标定：预热期只观察，采够了就用数据自己定阈值
+        if calib is not None and not calib.ready:
+            calib.observe(rep["psi_mean"])
+            if calib.ready and args.psi_low is None:
+                cfg.psi_low, cfg.psi_mid = calib.calibrate()
+                print(f"阈值标定：{calib.explain()}")
         lshift = label_psi(first.y, batch.y)
 
         # ② 归因
@@ -346,6 +363,8 @@ def main():
     print(f"账本    {ledger.summary()}")
     if agent.enabled:
         print(f"决策层  {agent.stats()}")
+    if calib is not None and calib.ready:
+        print(f"阈值    {calib.explain()}")
     if memory is not None:
         memory.print_summary()
         memory.to_json(os.path.join(args.out, "experience.json"))
