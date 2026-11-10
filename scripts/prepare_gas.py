@@ -56,8 +56,10 @@ def batch_id(path: str) -> int:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--src", default=r"data/Dataset (1)/Dataset")
-    ap.add_argument("--out", default="data/gas")
+    # 默认锚定到代码包根目录，避免从别的 cwd 跑时把数据写到奇怪的地方
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ap.add_argument("--src", default=os.path.join(repo, "data", "gas", "raw", "Dataset"))
+    ap.add_argument("--out", default=os.path.join(repo, "data", "gas", "processed"))
     ap.add_argument("--features", type=int, default=128)
     args = ap.parse_args()
 

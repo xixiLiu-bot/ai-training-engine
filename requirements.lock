@@ -1,0 +1,31 @@
+# 运行时依赖（版本锁定，保证可复现）
+#
+# 【整改 A5】原 requirements.txt 全是 `>=`，构建结果随时间漂移；
+# 而且没有锁定 scipy（sklearn 的隐式依赖）。这里全部固定。
+#
+# 生成方式（有网时）：
+#     pip install -r requirements.txt && pip freeze > requirements.lock
+# 当前这份是按 2026-11 的稳定版本手工锁定的。
+numpy==2.3.5
+scipy==1.18.1
+scikit-learn==1.9.1
+joblib==1.6.0
+threadpoolctl==3.8.0
+matplotlib==3.10.7
+contourpy==1.3.3
+cycler==0.12.1
+fonttools==4.60.1
+kiwisolver==1.4.9
+packaging==25.0
+pillow==12.0.0
+pyparsing==3.2.5
+python-dateutil==2.9.0.post0
+six==1.17.0
+
+# 说明：
+#   - 不包含 openai / requests / swanlab。
+#     决策层用的是纯标准库 urllib（evolver/engine/qwen4b/client.py），
+#     不需要第三方 HTTP 库。
+#   - **swanlab 是可选的开发依赖，故意不装进镜像**：
+#     离线评测容器既没网也没账号，装了只会增大体积。
+#     本地想上传实验请用：pip install -r requirements-dev.txt

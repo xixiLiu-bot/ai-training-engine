@@ -1,0 +1,243 @@
+================================================================================
+智训引擎 · Qwen 4B Harness 交付包
+PACKAGE_MANIFEST.txt
+================================================================================
+
+【1. 打包时间】
+2026-11-10 13:18:31 +0800
+打包主机 Python：3.12.14
+打包方式：白名单复制 + zipfile 确定性写入（只读源码，未修改任何代码）
+
+【2. 项目目录结构】
+qwen-harness/
+.dockerignore  (0.2 KB)
+.env.example  (1.6 KB)
+00-先读我.md  (0.7 KB)
+ALGORITHM_REVIEW_BRIEF.md  (22.4 KB)
+AUDIT_AND_REMEDIATION.md  (35.9 KB)
+DATA_INTAKE_REVIEW.md  (20.5 KB)
+Dockerfile  (1.4 KB)
+README.md  (19.3 KB)
+checksums.sha256  (1.0 KB)
+requirements-dev.txt  (0.9 KB)
+requirements.lock  (1.0 KB)
+requirements.txt  (0.2 KB)
+run.bat  (1.0 KB)
+run_offline.sh  (2.4 KB)
+assets/
+  fig1_loop.png  (88.6 KB)
+  fig2_layers.png  (118.7 KB)
+  fig3_design.png  (362.6 KB)
+data/
+  cmapss/
+    README_DATA.md  (2.1 KB)
+  gas/
+    README_DATA.md  (5.0 KB)
+    processed/
+      batch_01.npz  (379.7 KB)
+      batch_02.npz  (1055.1 KB)
+      batch_03.npz  (1343.7 KB)
+      batch_04.npz  (138.9 KB)
+      batch_05.npz  (169.0 KB)
+      batch_06.npz  (1945.7 KB)
+      batch_07.npz  (3059.3 KB)
+      batch_08.npz  (249.9 KB)
+      batch_09.npz  (397.8 KB)
+      batch_10.npz  (3018.7 KB)
+  xjtu_sy/
+    README_DATA.md  (2.1 KB)
+docs/
+  执行方案-五天冲刺.docx  (51.4 KB)
+  数据接入状态.md  (3.8 KB)
+  漂移检测-问题与文献.docx  (45.9 KB)
+  赛题规则速览.md  (4.5 KB)
+  赛题说明-队内共识文档.docx  (255.4 KB)
+  项目交接说明.docx  (130.2 KB)
+  项目技术简报.docx  (132.4 KB)
+evolver/
+  __init__.py  (0.0 KB)
+  config.py  (2.3 KB)
+  envfile.py  (3.8 KB)
+  evaluation.py  (7.8 KB)
+  adapters/
+    __init__.py  (0.2 KB)
+    bridge.py  (3.1 KB)
+    dataset.py  (14.0 KB)
+    identities.py  (4.5 KB)
+    metric.py  (4.0 KB)
+    model.py  (10.9 KB)
+    official.py  (12.1 KB)
+    sources.py  (11.2 KB)
+  engine/
+    __init__.py  (0.3 KB)
+    llm_agent.py  (7.8 KB)
+    llm_agent.py.orig  (7.6 KB)
+    policy.py  (3.5 KB)
+    qwen4b/
+      __init__.py  (0.9 KB)
+      actions.py  (4.1 KB)
+      client.py  (6.9 KB)
+      compat.py  (4.5 KB)
+      decider.py  (15.1 KB)
+      parsing.py  (4.3 KB)
+      prompts.py  (2.6 KB)
+  ledger/
+    __init__.py  (0.0 KB)
+    ledger.py  (3.4 KB)
+  logs/
+    __init__.py  (0.2 KB)
+    recorder.py  (16.2 KB)
+  loop/
+    __init__.py  (0.0 KB)
+    decide.py  (5.6 KB)
+    diagnose.py  (1.3 KB)
+    evaluate.py  (0.7 KB)
+    monitor.py  (8.8 KB)
+    release.py  (12.9 KB)
+  protocol/
+    __init__.py  (0.4 KB)
+    batch_stream.py  (4.6 KB)
+out/
+  curve.png  (112.8 KB)
+  decisions.jsonl  (8.6 KB)
+  metrics.json  (3.2 KB)
+  run.jsonl  (5.6 KB)
+  cal_full/
+    calibration_report.json  (16.0 KB)
+    calibration_report.md  (3.9 KB)
+    _frozen_holdout/
+      decisions.jsonl  (9.2 KB)
+      metrics.json  (3.2 KB)
+    _frozen_pre/
+      decisions.jsonl  (8.3 KB)
+      metrics.json  (3.0 KB)
+    _ref_never/
+      decisions.jsonl  (5.9 KB)
+      metrics.json  (2.6 KB)
+    _ref_old/
+      decisions.jsonl  (7.0 KB)
+      metrics.json  (2.7 KB)
+  cal_robust/
+    calibration_report.json  (24.9 KB)
+    calibration_report.md  (6.5 KB)
+    thresholds.json  (0.4 KB)
+    _frozen_pre/
+      decisions.jsonl  (8.0 KB)
+      metrics.json  (2.9 KB)
+    _frozen_pre_cand/
+      decisions.jsonl  (8.3 KB)
+      metrics.json  (3.0 KB)
+    _ref_never/
+      decisions.jsonl  (5.9 KB)
+      metrics.json  (2.6 KB)
+    _ref_old/
+      decisions.jsonl  (7.0 KB)
+      metrics.json  (2.7 KB)
+scripts/
+  calibrate.py  (46.5 KB)
+  check_swanlab.py  (4.6 KB)
+  gen_checksums.py  (4.0 KB)
+  make_data.py  (4.1 KB)
+  prepare_gas.py  (3.0 KB)
+  run_pipeline.py  (36.9 KB)
+  run_pipeline.py.orig  (14.4 KB)
+  trace_one_batch.py  (10.7 KB)
+  validate_official.py  (6.8 KB)
+skills/
+  covariate_shift_mild.md  (1.0 KB)
+tests/
+  __init__.py  (0.0 KB)
+  test_calibrate.py  (18.1 KB)
+  test_calibration.py  (7.7 KB)
+  test_envfile.py  (6.6 KB)
+  test_gas_source.py  (12.6 KB)
+  test_metric.py  (2.5 KB)
+  test_monitor.py  (4.2 KB)
+  test_official.py  (18.6 KB)
+  test_protocol.py  (2.7 KB)
+  test_recorder.py  (18.7 KB)
+  test_release.py  (8.3 KB)
+  test_resilience.py  (10.4 KB)
+tools/
+  build_brief_doc.py  (16.3 KB)
+  build_doc.py  (39.8 KB)
+  build_handoff_doc.py  (13.7 KB)
+  build_plan_doc.py  (24.6 KB)
+  build_refs_doc.py  (16.2 KB)
+  docx_kit.py  (13.9 KB)
+  make_design_figure.py  (5.1 KB)
+  make_figures.py  (7.1 KB)
+  trace_psi.py  (3.0 KB)
+  trace_psi_eps.py  (4.0 KB)
+
+【3. 当前测试结果】
+  全量测试：Ran 238 tests in 6.617s / OK (skipped=9)
+  说明：本机无 sklearn 时，另有 4 个集成测试会额外 skip（总 skip 13）
+
+【4. 当前数据状态】
+  ✅ UCI Gas 公开替代数据（public_substitute）—— 已接入
+     data/gas/processed/batch_01..10.npz
+     13,910 样本 / 128 特征 / 6 类 / 10 批；不是官方数据
+  ❌ 官方公开集（official_public）—— 未提供
+     data/official/ 不存在；赛题平台预计 11 月初开放
+  ⛔ 官方隐藏测试流（official_test）—— 只能平台评测
+     规则原文"隐藏测试流（不公开）"+"禁止获取隐藏测试集"
+     本地没有、也不可能有原始数据
+  ❌ C-MAPSS —— 尚未下载（仅目录契约 data/cmapss/README_DATA.md）
+  ❌ XJTU-SY —— 尚未下载（仅目录契约，且未检索到许可声明）
+
+【5. 已知未完成项】
+  - 官方数据集适配器：OfficialSource 只实现了"发现 + 契约校验 + csv/npz 读取"，
+    真实官方字段格式未知，未做针对性适配
+  - 官方评测：**从未运行**，本包不含任何官方分数
+  - C-MAPSS：缺 space_sep 读取器、缺批次切分规则、缺许可确认
+  - XJTU-SY：缺许可声明、缺 prepare 脚本、批次定义未确认
+  - 阈值标定：0.6/4.0 只是实验候选（单批次证据），默认仍是 1.2/2.5
+  - 多 seed 重复实验：未做
+  - Docker 镜像：Dockerfile 存在但**从未实际构建验证**（无 docker 环境）
+  - SwanLab 网页端：代码就绪，需自备 API Key 才能上传
+
+【6. 运行方式】
+  环境：Python >= 3.10，仅需 numpy / scikit-learn / matplotlib
+        （swanlab 是可选的开发依赖，不进运行时）
+
+  # 1) 安装运行时依赖
+  pip install -r requirements.lock
+
+  # 2) 自检（可选）
+  python scripts/check_swanlab.py
+
+  # 3) 合成数据闭环（最快，约 3 秒）
+  python scripts/run_pipeline.py --dataset synthetic --out out_demo
+
+  # 4) Gas 数据闭环（默认阈值 1.2/2.5）
+  python scripts/run_pipeline.py --dataset gas --psi-low 1.2 --psi-mid 2.5 --llm none
+
+  # 5) 跑测试
+  python -m unittest discover -s tests -t .
+
+  # 6) 官方数据体检（拿到公开集后）
+  python scripts/validate_official.py --root data/official
+
+  参考基线（本包已含实测产物）：
+    合成数据    基线 0.498 → 系统 0.836
+    Gas 数据    基线 0.283 → 系统 0.731（10 轮 / 0 违规）
+
+【7. 官方数据尚未接入的说明】
+  截至打包时，**没有拿到官方数据包**，因此：
+    - 本包不包含任何官方数据文件
+    - 本包不包含任何官方评测成绩
+    - data/official/ 目录不存在；validate_official.py 会如实报"尚未提供"
+    - 代码里的 official_public / official_test 身份只做纪律约束，未做真实适配
+  任何"官方评测通过/得分"的说法都是不成立的，请勿据此引用。
+
+  拿到官方公开集后，正确顺序是：
+    a) python scripts/validate_official.py --root data/official   # 只体检
+    b) 用 b02–b09 冻结参数，写入 thresholds.json
+    c) 官方测试流只跑一次；eval_ticket.json 用后即废
+
+【8. 敏感内容说明】
+  本包**不包含** .env、任何 API Key / Token / 密码、swanlog/、.git/、
+  Python 缓存、_unittest_tmp 临时目录。
+  随包提供的配置模板是 .env.example（全部为占位符，无真实凭据）。
+================================================================================
