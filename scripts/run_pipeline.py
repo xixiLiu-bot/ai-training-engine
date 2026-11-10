@@ -33,6 +33,7 @@ from evolver.loop import evaluate as ev            # noqa: E402
 from evolver.loop import release as rl             # noqa: E402
 from evolver.loop.calibrate import ThresholdCalibrator  # noqa: E402
 from evolver.loop.monitor import Monitor, label_psi  # noqa: E402
+from evolver.logs import SwanLogger  # noqa: E402
 from evolver.memory import ExperienceTable  # noqa: E402
 from evolver.protocol import LocalEvaluator, ProtocolViolation, Submission  # noqa: E402
 
@@ -135,6 +136,8 @@ def main():
                     choices=["none", "mock", "mock_bad", "pydantic-test",
                              "pydantic-sim", "pydantic", "pytrio", "ollama"],
                     help="决策层后端：mock 验证链路，pytrio/ollama 接真模型")
+    ap.add_argument("--no-swan", action="store_true",
+                    help="关闭 SwanLab 记录（A/B 对照或调试用）")
     args = ap.parse_args()
 
     cfg = Config()
@@ -153,6 +156,17 @@ def main():
     catalog = md.action_catalog(args.model)
     print(f"数据集：{adapter.name}  批次：{adapter.n_batches}  模型：{args.model}")
     print(f"动作清单：{ {k: v for k, v in catalog.items()} }")
+
+    # ── SwanLab：记录本次实验（旁路，失败不影响主流程） ──
+    swan = SwanLogger(
+        enabled=not args.no_swan,
+        experiment_name=f"{adapter.name}-{args.model}",
+        config={"dataset": adapter.name, "model": args.model,
+                "n_batches": adapter.n_batches,
+                "psi_low": cfg.psi_low, "psi_mid": cfg.psi_mid,
+                "calibrate": (not args.no_calibrate and args.psi_low is None),
+                "memory": not args.no_memory},
+    )
 
     # ── 评测协议：一问一答 ──
     # 没交卷就拿不到下一批；任何"偷看未来"的动作都会被直接拦下。
@@ -305,6 +319,21 @@ def main():
             "action": dec["action"], "decision": rel_rec["decision"],
         })
 
+        # SwanLab：step 对齐批次，评委能按“第几批”看曲线
+        swan.log({
+            "f1_baseline": f1_base,
+            "f1_system": f1_sys,
+            "psi_mean": rep["psi_mean"],
+            "psi_max": rep["psi_max"],
+            "label_shift": lshift,
+            "gain": gain,
+            "cost_sec": dec["cost_sec"],
+            "action_id": {"do_nothing": 0, "refresh_normalization": 1,
+                          "refit_model": 2}.get(dec["action"], -1),
+            "decision_id": {"noop": 0, "accept": 1, "rollback": 2}.get(
+                rel_rec["decision"], -1),
+        }, step=b)
+
         flag = {"accept": "[OK] 上线", "rollback": "[X] 回滚", "noop": "-"}[rel_rec["decision"]]
         src = {"rule": "规则", "rule+llm": "规则+LLM", "llm": "LLM",
                "memory": "记忆", "memory+llm": "记忆+LLM"}.get(
@@ -353,6 +382,7 @@ def main():
         except Exception:
             break
     plot(rows, os.path.join(args.out, "curve.png"), concept_start)
+    swan.log_image(os.path.join(args.out, "curve.png"), key="curve")
 
     n_acc = sum(1 for r in rows if r["decision"] == "accept")
     n_roll = sum(1 for r in rows if r["decision"] == "rollback")
@@ -374,6 +404,7 @@ def main():
     print(f"协议    {ps['rounds']} 轮 | 部署 {ps['deploy']} | 维持 {ps['keep']} | "
           f"违规 {ps['violations']}")
     print(f"产出    {args.out}/metrics.json  decisions.jsonl  curve.png")
+    swan.finish()
     if n_act < 3:
         print("[!] 有效动作不足 3 次，门槛③可能过不了——加大漂移强度或调低阈值")
 
