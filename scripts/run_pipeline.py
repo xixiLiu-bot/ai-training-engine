@@ -158,9 +158,14 @@ def main():
     print(f"动作清单：{ {k: v for k, v in catalog.items()} }")
 
     # ── SwanLab：记录本次实验（旁路，失败不影响主流程） ──
+    # 实验名带关键参数，避免网页上一堆同名 run 分不清
+    if not args.no_calibrate and args.psi_low is None:
+        _exp_suffix = "auto"
+    else:
+        _exp_suffix = f"psi{cfg.psi_low:g}-{cfg.psi_mid:g}"
     swan = SwanLogger(
         enabled=not args.no_swan,
-        experiment_name=f"{adapter.name}-{args.model}",
+        experiment_name=f"{adapter.name}-{args.model}-{_exp_suffix}",
         config={"dataset": adapter.name, "model": args.model,
                 "n_batches": adapter.n_batches,
                 "psi_low": cfg.psi_low, "psi_mid": cfg.psi_mid,
