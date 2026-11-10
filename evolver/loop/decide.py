@@ -89,7 +89,7 @@ def decide(state: State, diagnosis: dict, cfg, catalog: dict | None = None) -> d
                    "动作清单里没有 refit_model，只能维持现状", cost)
 
     # 5b) 大面积特征超标（不只是平均偏高）→ 局部校准救不了
-    if state.psi_ratio >= 0.5 and can_refit:
+    if state.psi_ratio >= getattr(cfg, "psi_ratio_th", 0.85) and can_refit:
         return _mk("refit_model",
                    f"{state.psi_ratio:.0%} 的特征都超标，不是个别传感器的问题",
                    "超标比例过半，校准只能救局部，直接重训更划算", cost)

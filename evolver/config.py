@@ -7,6 +7,8 @@ class Config:
     # ---- 监测 ----
     psi_bins: int = 10
     psi_low: float = 0.10       # 低于它：视为稳定，不动
+    # 超标比例阈值：超过这个比例的特征都漂了，才判定“整体漂移”
+    psi_ratio_th: float = 0.85
     psi_mid: float = 0.25       # 超过它：明显漂移，可以直接上重训
     label_psi_th: float = 0.10  # 标签分布漂移判定阈值
 

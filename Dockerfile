@@ -19,11 +19,14 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
         -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 代码 + 技能 + 数据（data/ 在干净 clone 里只有 .gitkeep，合成数据运行时生成）
+# 代码 + 技能（data/ 不在仓库里，由 make_data.py 运行时生成）
 COPY evolver ./evolver
 COPY scripts ./scripts
 COPY skills ./skills
-COPY data ./data
+
+# data/ 在干净 clone 里不存在，直接 COPY 会让构建失败；
+# 这里只建空目录，数据由下面的 make_data.py 生成
+RUN mkdir -p data
 
 # 一次运行：造数据 → 跑完整闭环；日志同时写 out/run.log
 # SwanLab 默认 offline，只写本地 swanlog/，评测时无网络也能跑

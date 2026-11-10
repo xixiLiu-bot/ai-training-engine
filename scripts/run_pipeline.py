@@ -120,6 +120,8 @@ def main():
                     help="只跑第 start 批之后（训练/测试切分用）")
     ap.add_argument("--end", type=int, default=None,
                     help="只跑到第 end 批为止")
+    ap.add_argument("--ratio-th", type=float, default=None,
+                    help="超标比例阈值（默认 0.85）")
     ap.add_argument("--no-calibrate", action="store_true",
                     help="关闭阈值自标定（用手工给的 --psi-low/--psi-mid）")
     ap.add_argument("--calib-batches", type=int, default=2,
@@ -147,6 +149,8 @@ def main():
         cfg.psi_low = args.psi_low
     if args.psi_mid is not None:
         cfg.psi_mid = args.psi_mid
+    if args.ratio_th is not None:
+        cfg.psi_ratio_th = args.ratio_th
     adapter = ds.build(args.dataset)
     if args.start is not None or args.end is not None:
         adapter = ds.SubsetAdapter(adapter, args.start or 1, args.end)
