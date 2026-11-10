@@ -1,4 +1,4 @@
-﻿"""生成一条「会漂移」的合成数据流。
+"""生成一条「会漂移」的合成数据流。
 
 用途：官方数据包到手之前，先用它把闭环跑通、把曲线画出来。
 
@@ -53,11 +53,13 @@ def main():
     ap.add_argument("--classes", type=int, default=3)
     ap.add_argument("--shift", type=float, default=0.42,
                     help="末批的平移幅度（以特征标准差为单位）")
+    ap.add_argument("--seed", type=int, default=42,
+                    help="数据随机种子（多种子实验用）")
     ap.add_argument("--out", default="data/synthetic")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(args.seed)
 
     n_pool = args.n * args.batches * 2
     Z_pool, y_pool = build_pool(42, n_pool, args.features,

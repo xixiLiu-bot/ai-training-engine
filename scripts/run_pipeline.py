@@ -224,6 +224,8 @@ def main():
     ap.add_argument("--model", default=None,
                     choices=["logreg", "gbdt", "rf", "ridge"],
                     help="不填则按任务类型自动选：分类=logreg，回归=ridge")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="随机种子（不填用 config 默认 0）")
     ap.add_argument("--out", default="out")
     ap.add_argument("--psi-low", type=float, default=None,
                     help="稳定阈值（低于它不动）。不填用 config 默认值")
@@ -288,6 +290,8 @@ def main():
         cfg.psi_low = args.psi_low
     if args.psi_mid is not None:
         cfg.psi_mid = args.psi_mid
+    if args.seed is not None:
+        cfg.random_state = args.seed
     if args.ratio_th is not None:
         cfg.psi_ratio_th = args.ratio_th
     cfg.detector = args.detector
