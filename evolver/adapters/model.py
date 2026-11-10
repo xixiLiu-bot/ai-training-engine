@@ -18,7 +18,12 @@ def _make_estimator(kind: str, random_state: int):
         from sklearn.ensemble import RandomForestClassifier
         return RandomForestClassifier(n_estimators=80, random_state=random_state,
                                       n_jobs=-1)
-    raise ValueError(f"未知模型 '{kind}'，可选：logreg / gbdt / rf")
+    if kind == "mlp":
+        from sklearn.neural_network import MLPClassifier
+        # 刻意做小：4 核 8G 无 GPU，且镜像有 2G 限制
+        return MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=600,
+                             early_stopping=True, random_state=random_state)
+    raise ValueError(f"未知模型 '{kind}'，可选：logreg / gbdt / rf / mlp")
 
 
 class SklearnModelAdapter:
@@ -117,4 +122,40 @@ def build(kind: str = "logreg", **kwargs) -> SklearnModelAdapter:
     return SklearnModelAdapter(kind=kind, **kwargs)
 
 
-__all__ = ["SklearnModelAdapter", "build", "np"]
+# ─────────────────────────────────────────────────────────────
+# 动作清单：每个模型自己声明「我能做哪些更新手段、各花多少秒」
+#
+# 这里只声明**能力**（能不能做、多少钱），不声明**效用**（做了有没有用）。
+# 为什么这么分：
+#
+#   · 能不能做 —— 由模型本身决定。树模型技术上也能重算标准化，只是快慢不同。
+#   · 有没有用 —— 由数据决定，应该交给经验表去学，而不是在这里写死。
+#
+# 曾经试过「把对树有害的校准直接从清单里删掉」，结果反而更差：
+#   带校准 0.478 → 删掉校准 0.437
+# 因为它不只是"修"，还是"探"——先花 0.05 秒试一下，不行下一批再升级。
+# 删掉它，系统就变得急躁，每次都直接上最贵的重训。
+#
+# 所以：清单管成本，经验表管取舍。
+# ─────────────────────────────────────────────────────────────
+ACTION_CATALOGS: dict[str, dict[str, float]] = {
+    # 线性模型：重训很快
+    "logreg": {"do_nothing": 0.0, "refresh_normalization": 0.05, "refit_model": 0.5},
+    # 梯度提升树：重训很慢（100 棵树）
+    "gbdt": {"do_nothing": 0.0, "refresh_normalization": 0.05, "refit_model": 2.2},
+    # 随机森林：中等
+    "rf": {"do_nothing": 0.0, "refresh_normalization": 0.05, "refit_model": 1.5},
+    # 多层感知机：重训中等，但标准化是网络输入的一部分
+    "mlp": {"do_nothing": 0.0, "refresh_normalization": 0.05, "refit_model": 1.2},
+}
+
+
+def action_catalog(kind: str) -> dict[str, float]:
+    """返回这个模型支持的动作及成本（秒）。"""
+    if kind not in ACTION_CATALOGS:
+        raise ValueError(
+            f"未知模型 '{kind}'，可选：{list(ACTION_CATALOGS)}")
+    return dict(ACTION_CATALOGS[kind])
+
+
+__all__ = ["SklearnModelAdapter", "build", "action_catalog", "ACTION_CATALOGS", "np"]

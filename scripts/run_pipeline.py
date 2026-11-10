@@ -111,7 +111,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default="synthetic",
                     choices=["synthetic", "gas", "xjtu"])
-    ap.add_argument("--model", default="logreg", choices=["logreg", "gbdt", "rf"])
+    ap.add_argument("--model", default="logreg",
+                    choices=["logreg", "gbdt", "rf", "mlp"])
     ap.add_argument("--out", default="out")
     ap.add_argument("--start", type=int, default=None,
                     help="只跑第 start 批之后（训练/测试切分用）")
@@ -144,7 +145,9 @@ def main():
     metric = mt.build("f1_macro")
     os.makedirs(args.out, exist_ok=True)
 
+    catalog = md.action_catalog(args.model)
     print(f"数据集：{adapter.name}  批次：{adapter.n_batches}  模型：{args.model}")
+    print(f"动作清单：{ {k: v for k, v in catalog.items()} }")
 
     # ── 评测协议：一问一答 ──
     # 没交卷就拿不到下一批；任何"偷看未来"的动作都会被直接拦下。
@@ -200,7 +203,7 @@ def main():
         f1_base = metric.score(batch.y, baseline.predict(batch.X))
 
         # ① 监测
-        rep = monitor.check(batch.X)
+        rep = monitor.check(batch.X, cfg.psi_low)
         lshift = label_psi(first.y, batch.y)
 
         # ② 归因
@@ -214,6 +217,7 @@ def main():
         # ③ 决策
         state = dc.State(
             batch_id=b, psi_mean=rep["psi_mean"],
+            psi_ratio=rep["psi_ratio"], psi_top=rep["psi_max"],
             current_score=rel.current_score, best_score=best,
             steps_since_update=b - last_update,
             last_action=last_action, last_gain=last_gain,
@@ -221,7 +225,7 @@ def main():
             history=[{"psi_mean": m["psi_mean"]} for m in monitor.history[:-1]],
         )
         history_read = state.read_history()
-        dec = policy.decide(state, diag, cfg, agent, memory)
+        dec = policy.decide(state, diag, cfg, agent, memory, catalog)
 
         # ④ 执行 + 影子评估
         cand, shadow = None, None

@@ -42,7 +42,7 @@ class Monitor:
         """
         self.reference_X = np.asarray(X, dtype=float)
 
-    def check(self, X: np.ndarray) -> dict:
+    def check(self, X: np.ndarray, threshold: float = 0.25) -> dict:
         X = np.asarray(X, dtype=float)
         per_feature = [
             _psi(self.reference_X[:, j], X[:, j], self.bins)
@@ -53,6 +53,9 @@ class Monitor:
             "psi_max": float(psi.max()) if psi.size else 0.0,
             "psi_mean": float(psi.mean()) if psi.size else 0.0,
             "psi_p90": float(np.quantile(psi, 0.9)) if psi.size else 0.0,
+            # 有多少比例的特征超标 —— 区分「少数几个坏了」和「整体都坏了」。
+            # 平均值分不出来，这个能。
+            "psi_ratio": float((psi >= threshold).mean()) if psi.size else 0.0,
             "worst_feature": int(psi.argmax()) if psi.size else -1,
             "per_feature": [float(v) for v in psi],
         }
