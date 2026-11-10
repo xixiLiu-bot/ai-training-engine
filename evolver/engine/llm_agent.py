@@ -27,6 +27,25 @@ PRESETS = {
     "none": {"enabled": False},
     "mock": {"enabled": True, "mode": "mock", "model": "mock-llm"},
     "mock_bad": {"enabled": True, "mode": "mock", "model": "mock-bad"},
+    # ★ Pydantic AI 框架 + TestModel：离线验证「框架 → 结构化输出 → 闸门」整条链路，
+    #   不需要网络，也不需要下载任何模型权重。TestModel 不会思考，只会给出合法结构。
+    "pydantic-test": {
+        "enabled": True, "mode": "pydantic", "model": "TestModel",
+        "base_url": None, "api_key": "EMPTY", "use_test_model": True,
+    },
+    # ★ Pydantic AI 框架 + 模拟模型：仍走框架，但按 PSI 给一个合理的建议，
+    #   用来验证「接了大模型之后闭环表现如何」。真模型来了这段作废。
+    "pydantic-sim": {
+        "enabled": True, "mode": "pydantic", "model": "SimModel",
+        "base_url": None, "api_key": "EMPTY", "use_test_model": True,
+        "simulate": True,
+    },
+    # ★ Pydantic AI 框架 + 真模型：改成赛题组给的地址即可
+    "pydantic": {
+        "enabled": True, "mode": "pydantic", "model": "Qwen3.8-27B",
+        "base_url": "http://127.0.0.1:8000/v1", "api_key": "EMPTY",
+        "use_test_model": False,
+    },
     "pytrio": {
         "enabled": True, "mode": "openai",
         "base_url": "http://127.0.0.1:8000/v1",
@@ -81,6 +100,8 @@ class LLMAgent:
         self.model = preset.pop("model", "mock-llm")
         self.base_url = preset.pop("base_url", None)
         self.api_key = preset.pop("api_key", "EMPTY")
+        self.use_test_model = bool(preset.pop("use_test_model", False))
+        self.simulate = bool(preset.pop("simulate", False))
         self.timeout = 10.0
         self.tokens_used = 0
         self.calls = 0
@@ -94,8 +115,11 @@ class LLMAgent:
         prompt = build_prompt(state, diagnosis, catalog, rule_action)
         t0 = time.time()
         try:
-            raw = self._call(prompt)
-            parsed = self._parse(raw)
+            if self.mode == "pydantic":
+                parsed = self._pydantic(prompt, catalog)
+            else:
+                raw = self._call(prompt)
+                parsed = self._parse(raw)
             if parsed is None:
                 self.failures += 1
                 return None
@@ -109,6 +133,72 @@ class LLMAgent:
         except Exception as e:                      # noqa: BLE001
             self.failures += 1
             return {"error": f"{type(e).__name__}: {e}"[:200]}
+
+    # ---- Pydantic AI：结构化输出，不需要自己解析 ----
+    @staticmethod
+    def _decision_model(actions: list[str]):
+        """按这次真正可用的动作，动态生成 schema。
+
+        action 用 Literal 锁死——模型吐出不存在的动作时，框架直接判不合格并重试，
+        不需要我们事后用正则+白名单去猜。这就是换框架的核心收益。
+        """
+        from typing import Literal
+
+        from pydantic import Field, create_model
+
+        return create_model(
+            "Decision",
+            action=(Literal[tuple(actions)], ...),
+            reason=(str, Field(default="", max_length=200)),
+        )
+
+    def _simulate(self, prompt: str) -> dict:
+        """模拟一个「还算靠谱的模型」：读 PSI，按成本阶梯给建议。
+
+        它不是真模型，只用于验证「框架 + 闭环」这条路径能跑出有意义的结果。
+        真模型接上后这段直接作废。
+        """
+        m = re.search(r"PSI：([\d.]+)", prompt)
+        psi = float(m.group(1)) if m else 0.0
+        if psi >= 2.5:
+            return {"action": "refit_model", "reason": "漂移显著，建议重训"}
+        if psi >= 1.0:
+            return {"action": "refresh_normalization", "reason": "先试零成本校准"}
+        return {"action": "do_nothing", "reason": "分布稳定，无需动作"}
+
+    def _pydantic(self, prompt: str, catalog: dict) -> dict | None:
+        from pydantic_ai import Agent
+
+        actions = list(catalog.keys())
+        Decision = self._decision_model(actions)
+
+        if self.use_test_model:
+            from pydantic_ai.models.test import TestModel
+            if self.simulate:
+                want = self._simulate(prompt)
+                # 模拟的建议可能落在当前模型不可用的动作上（如 mlp 没有输出校准档）
+                if want["action"] not in actions:
+                    want = {"action": "do_nothing", "reason": "该档对本模型不可用"}
+                model = TestModel(custom_output_args=want)
+            else:
+                model = TestModel()
+        else:
+            from pydantic_ai.models.openai import OpenAIChatModel
+            from pydantic_ai.providers.openai import OpenAIProvider
+
+            model = OpenAIChatModel(
+                self.model,
+                provider=OpenAIProvider(base_url=self.base_url,
+                                        api_key=self.api_key),
+            )
+
+        agent = Agent(model, output_type=Decision,
+                      system_prompt=SYSTEM_PROMPT, retries=2)
+        result = agent.run_sync(prompt)
+        d = result.output                      # 已经是合法对象，无需解析
+        if d.action not in catalog:
+            return None
+        return {"action": d.action, "reason": d.reason}
 
     # ---- 后端实现 ----
     def _call(self, prompt: str) -> str:

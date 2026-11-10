@@ -270,8 +270,11 @@ def main():
     ap.add_argument("--ratio-th", type=float, default=None,
                     help="超标比例阈值（默认 0.85）")
     ap.add_argument("--llm", default="none",
-                    choices=["none", "mock", "mock_bad", "pytrio", "qwen4b", "ollama"],
-                    help="决策层后端：mock 验证链路，pytrio/qwen4b/ollama 接真模型")
+                    choices=["none", "mock", "mock_bad",
+                             "pydantic-test", "pydantic-sim", "pydantic",
+                             "pytrio", "qwen4b", "ollama"],
+                    help="决策层后端：pydantic-* 走 Pydantic AI 框架（结构化输出）；"
+                         "pytrio/qwen4b/ollama 接真模型")
     args = ap.parse_args()
 
     # 只打印"读了哪些 key"，不打印任何 value（.env 里可能有密钥）
