@@ -111,3 +111,53 @@ class TestLabelDrift(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+class TestSmoothingAndTopK(unittest.TestCase):
+    """空箱平滑 + top-k（对应 docs/漂移检测-问题与文献.docx 的问题一/三）。"""
+
+    def setUp(self):
+        rng = np.random.default_rng(7)
+        # 参照批集中在一侧，当前批偏到另一侧 → 必然出现空箱
+        self.ref = np.concatenate([rng.normal(0, 0.3, 180),
+                                   rng.normal(10, 0.1, 20)])
+        self.cur = np.concatenate([rng.normal(0, 0.3, 40),
+                                   rng.normal(10, 0.1, 160)])
+
+    def test_默认平滑与eps无关(self):
+        """问题一的验收标准：改 eps 不应改变结果。"""
+        vals = [_psi(self.ref, self.cur, bins=10, eps=e)
+                for e in (1e-2, 1e-6, 1e-12)]
+        self.assertLess(max(vals) - min(vals), 1e-12,
+                        f"Laplace 平滑不应依赖 eps，实际 {vals}")
+
+    def test_旧的clip平滑会随eps漂移(self):
+        """反向测试：证明修复确实起作用，防止以后被改回去。"""
+        vals = [_psi(self.ref, self.cur, bins=10, eps=e, smoothing="clip")
+                for e in (1e-2, 1e-12)]
+        self.assertGreater(max(vals) - min(vals), 0.1,
+                           "旧行为本来就该不稳定，否则这条测试没有意义")
+
+    def test_完全分离时仍给出显著值(self):
+        """两个分布完全不重叠，PSI 必须很大——不能被任何平滑压成 0。"""
+        rng = np.random.default_rng(11)
+        v = _psi(rng.normal(0, 1, 500), rng.normal(8, 1, 500), bins=10)
+        self.assertGreater(v, 1.0, "完全不重叠却给出接近 0，说明平滑方式有缺陷")
+
+    def test_topk夹在均值与最大值之间(self):
+        m = Monitor(self.ref.reshape(-1, 1))
+        rep = m.check(self.cur.reshape(-1, 1), threshold=0.25)
+        self.assertIn("psi_topk", rep)
+        self.assertGreaterEqual(rep["psi_topk"], rep["psi_mean"] - 1e-9)
+        self.assertLessEqual(rep["psi_topk"], rep["psi_max"] + 1e-9)
+
+    def test_三个信号互补_数值关系正确(self):
+        """mean <= topk <= max：三个指标从不同角度刻画同一批漂移。"""
+        rng = np.random.default_rng(3)
+        ref = rng.normal(0, 1, size=(500, 60))
+        cur = rng.normal(0, 1, size=(500, 60))
+        cur[:, :10] = rng.normal(0.6, 1, size=(500, 10))     # 10 个特征轻漂
+        rep = Monitor(ref).check(cur, threshold=0.25)
+        self.assertLessEqual(rep["psi_mean"], rep["psi_topk"] + 1e-9)
+        self.assertLessEqual(rep["psi_topk"], rep["psi_max"] + 1e-9)
+        # 均值被多数正常特征稀释，topk 才看得出「有一批特征在漂」
+        self.assertGreater(rep["psi_topk"], rep["psi_mean"] * 2)

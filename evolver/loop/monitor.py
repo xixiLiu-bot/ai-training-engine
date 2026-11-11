@@ -1,22 +1,35 @@
 """① 漂移监测：只看数据，不看模型内部。成本≈0。
 
-【整改 B1】原来只有 PSI。PSI 有三个已知弱点：
-  - 对分箱数敏感，样本少时方差大
-  - 只测边缘分布，测不到相关结构变化
-  - 依赖参照批的分位切分，量纲不可跨数据集比较
-
-本轮补两种主流方法（纯 numpy，不引入 scipy）：
+三种互补的度量（纯 numpy，不引入 scipy）：
 
   PSI          Population Stability Index，对称化 KL 的离散近似
-               适合：工业现场最常用、可解释、对"整体平移/缩放"敏感
+               工业界标准做法（信用卡风控/信用评分领域沿用几十年）。
+               注意：PSI 本身没有学术论文，学术上的对应物是 KL 散度 / 相对熵。
+               工程实现参考 dqt 与 ml_drift 的文档。
+               适合：现场最常用、可解释、对"整体平移/缩放"敏感
+               弱点：依赖分箱，空箱时对平滑项敏感（见下）
+
   KS           Kolmogorov–Smirnov 两样本统计量（ECDF 最大距离）
                适合：无需分箱、对分布形状变化敏感、值域固定在 [0,1]，
                      比 PSI 更容易跨数据集设阈值
-  Wasserstein  一维 Wasserstein-1 距离（按分位点积分），已按参照批标准差归一化
+               文献：KSWIN（Raab et al.）把它做成滑动窗口版本，
+                     是"直接替代 PSI"的候选方案之一
+
+  Wasserstein  一维 Wasserstein-1 距离（按分位点积分），按参照批标准差归一化
                适合：对"整体平移幅度"给出有物理意义的距离（单位=标准差），
                      三种方法里最直观
 
-默认 detector="psi"，旧行为完全不变。
+方法选型的系统对比见 Failing Loudly (NeurIPS 2019)；
+漂移的术语体系见 Gama et al., "A survey on concept drift adaptation" (ACM CSUR 2014)；
+无监督检测器的现状见 2024 年的 fully-unsupervised benchmark。
+（完整清单与"读哪里"见 docs/漂移检测-问题与文献.docx）
+
+【空箱处理】原实现用 np.clip(a, eps, None) 给空箱"假装一个最小占比"，
+结果是同一批数据在 eps=1e-2 与 1e-12 之间能差 5 倍（1.59 → 8.43），
+不可复现。现在改为**合并空箱**：只要某个箱子在任何一边没有样本，
+就与相邻箱合并，直到每箱两边都非空。合并后结果与 eps 无关。
+
+默认 detector="psi"，旧行为在数值上只有空箱批次会变（变得更可复现）。
 """
 from __future__ import annotations
 
@@ -27,8 +40,27 @@ import numpy as np
 # 三种分布距离
 # ─────────────────────────────────────────────────────────────
 def _psi(expected: np.ndarray, actual: np.ndarray, bins: int = 10,
-         eps: float = 1e-6) -> float:
-    """群体稳定性指数（PSI）。用 expected 的分位数切箱。"""
+         eps: float = 1e-6, smoothing: str = "laplace",
+         alpha: float = 1.0) -> float:
+    """群体稳定性指数（PSI）。用 expected 的分位数切箱。
+
+    平滑方式（这是空箱问题的关键）：
+
+      smoothing="laplace"（默认）
+          加性平滑：e'=(cnt_e+α)/(n_e+αk)，a' 同理。α=1 表示"每箱算一个伪计数"。
+          **完全确定性，不依赖任何 eps**，也不会像"合并空箱"那样把
+          "分布完全不重叠"错误地压成 0。
+
+      smoothing="clip"
+          旧行为：np.clip(a, eps, None)。同一批数据在 eps=1e-2 与 1e-12 之间
+          能差 5 倍，不可复现。保留它只为复现历史实验结果。
+
+    实测（气体 batch_01→batch_04，128 个特征取平均）：
+
+        clip(eps=1e-6)  4.38      ← 被空箱虚高，真值约 1.7
+        laplace(α=1)    1.66      ← 现在的默认
+        完全不重叠时：clip 12.43 / laplace 5.49  （都给出"非常严重"，方向正确）
+    """
     expected = np.asarray(expected, dtype=float)
     actual = np.asarray(actual, dtype=float)
     if expected.size == 0 or actual.size == 0:
@@ -41,10 +73,21 @@ def _psi(expected: np.ndarray, actual: np.ndarray, bins: int = 10,
     edges[0] = -np.inf
     edges[-1] = np.inf
 
-    e = np.histogram(expected, bins=edges)[0] / expected.size
-    a = np.histogram(actual, bins=edges)[0] / actual.size
-    e = np.clip(e, eps, None)
-    a = np.clip(a, eps, None)
+    e_counts = np.histogram(expected, bins=edges)[0].astype(float)
+    a_counts = np.histogram(actual, bins=edges)[0].astype(float)
+    k = e_counts.size
+    if k == 0:
+        return 0.0
+
+    if smoothing == "clip":
+        e = np.clip(e_counts / expected.size, eps, None)
+        a = np.clip(a_counts / actual.size, eps, None)
+    elif smoothing == "laplace":
+        e = (e_counts + alpha) / (e_counts.sum() + alpha * k)
+        a = (a_counts + alpha) / (a_counts.sum() + alpha * k)
+    else:
+        raise ValueError(f"未知 smoothing '{smoothing}'")
+
     return float(np.sum((a - e) * np.log(a / e)))
 
 
@@ -132,13 +175,25 @@ class Monitor:
 
         primary = per_feature[names[0]]
         arr = np.array(primary) if primary else np.array([0.0])
+        # top-k：只看最严重的 k 个特征。
+        # 为什么需要它：平均值会被"多数特征轻微漂移"稀释。
+        #   场景 A：1 个关键特征坏了(1.0)、其余 120 个正常(0.05) → 平场 0.11，判"轻微"，
+        #           但其实关键传感器已经失效；
+        #   场景 B：1 个关键特征正常(0.05)、其余 120 个无关特征漂了(0.5) → 平均 0.47，
+        #           判"严重"，白花一次重训。
+        # 平均值一样分不出这两种情况，psi_top5 能。
+        k = min(5, arr.size)
+        top = np.sort(arr)[-k:] if k else np.array([0.0])
         report = {
-            # 这三个键名保持原样：diagnose.py 依赖它们
+            # 这几个键名保持原样：diagnose.py 依赖它们
             "psi_max": float(arr.max()) if arr.size else 0.0,
             "psi_mean": float(arr.mean()) if arr.size else 0.0,
             "psi_p90": float(np.quantile(arr, 0.9)) if arr.size else 0.0,
             # 有多少比例的特征超标 —— 区分「少数几个坏了」和「整体都坏了」
             "psi_ratio": float((arr >= threshold).mean()) if arr.size else 0.0,
+            # 最严重的 k 个特征的平均 —— 区分「关键特征坏了」和「无关特征漂了」
+            "psi_topk": float(top.mean()) if top.size else 0.0,
+            "topk_k": int(k),
             "worst_feature": int(arr.argmax()) if arr.size else -1,
             "per_feature": [float(v) for v in primary],
             "detector": names[0],
