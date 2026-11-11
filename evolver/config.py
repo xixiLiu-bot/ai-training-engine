@@ -49,5 +49,6 @@ class Config:
     warmup_batches: int = 1     # 前几批只观察不动作
     random_state: int = 0
     logreg_c: float = 1.0    # 逻辑回归的正则强度倒数（越小越强）
+    scaler_kind: str = "standard"   # standard | quantile（百分位归一）
     max_snapshots: int = 20     # 保留多少个模型快照（回滚用）
     extra: dict = field(default_factory=dict)
