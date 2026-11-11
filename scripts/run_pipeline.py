@@ -225,8 +225,8 @@ def main():
                     choices=["logreg", "gbdt", "rf", "mlp", "gnb", "ridge"],
                     help="不填则按任务类型自动选：分类=logreg，回归=ridge")
     ap.add_argument("--scaler", default=None,
-                    choices=["standard", "quantile"],
-                    help="标准化方式：standard=均值/方差，quantile=百分位（抗个体差异）")
+                    choices=["standard", "quantile", "auto"],
+                    help="标准化方式：standard=均值/方差，quantile=百分位，auto=第2批时自动选")
     ap.add_argument("--logreg-c", type=float, default=None,
                     help="逻辑回归正则强度倒数（默认 1.0，越小正则越强）")
     ap.add_argument("--seed", type=int, default=None,
@@ -301,6 +301,19 @@ def main():
         cfg.logreg_c = args.logreg_c
     if args.scaler is not None:
         cfg.scaler_kind = args.scaler
+    # auto：先按 standard 起步，等拿到两批新数据后再比一次、决定换不换。
+    # 只在分类任务上启用——回归任务（C-MAPSS）上实测 auto 反而更差
+    # （-18.53 vs 固定 standard 的 -17.94），原因是回归的"校准后打分"
+    # 不能代表闭环动态。回归请显式指定 --scaler。
+    auto_scaler = (cfg.scaler_kind == "auto")
+    if auto_scaler:
+        if args.task_type == "regression" or (
+                args.task_type is None
+                and getattr(ds.build(args.dataset), "task_type", "classification")
+                == "regression"):
+            print("  [!] 回归任务不支持 --scaler auto，已回退到 standard")
+            auto_scaler = False
+        cfg.scaler_kind = "standard"
     if args.ratio_th is not None:
         cfg.psi_ratio_th = args.ratio_th
     cfg.detector = args.detector
@@ -467,6 +480,8 @@ def main():
 
     best = ref_score
     last_update = 0
+    scaler_picked = False
+    scaler_probe = []
     last_action, last_gain = None, 0.0
 
     # 【A1】整个循环包一层：连 next_batch 都可能抛异常（协议/数据问题）
@@ -482,6 +497,47 @@ def main():
             try:
                 # 对照组：静态基线
                 f1_base = metric.score(batch.y, baseline.predict(batch.X))
+
+                # ── 尺子自动选型（用前两批数据，只在第一个决策窗口做一次）──
+                # 为什么不能用一批：单批探测在三份数据里选错了一次（气体）。
+                # 为什么要带 refresh：闭环里真正拉开差距的是"廉价更新管不管用"，
+                #   所以探测时也要把候选模型在新批上校准一次再打分。
+                # 为什么用两批：两批平均后三份数据全部选对（轴承→quantile，
+                #   气体/合成→standard）。代价是一次性多训两个模型。
+                if auto_scaler and not scaler_picked:
+                    scaler_probe.append((batch.X, batch.y))
+                    if len(scaler_probe) >= 2:
+                        scaler_picked = True
+                        probe = {}
+                        for sc_name in ("standard", "quantile"):
+                            try:
+                                pm = md.build(
+                                    model_kind, random_state=cfg.random_state,
+                                    logreg_c=cfg.logreg_c,
+                                    scaler_kind=sc_name).fit(first.X, first.y)
+                                scores = []
+                                for Xp, yp in scaler_probe:
+                                    pm2 = pm.clone().refresh_normalization(Xp)
+                                    scores.append(metric.score(yp, pm2.predict(Xp)))
+                                probe[sc_name] = float(np.mean(scores))
+                            except Exception as exc:      # noqa: BLE001
+                                errors.append({"batch": b, "stage": "scaler_probe",
+                                               "error": f"{sc_name}: {exc}"})
+                        if probe:
+                            chosen = max(probe, key=probe.get)
+                            print("  尺子选型（前 2 批校准后得分）：" + "，".join(
+                                f"{k}={v:.3f}" for k, v in probe.items())
+                                + f" → 选 {chosen}")
+                            if chosen != cfg.scaler_kind:
+                                cfg.scaler_kind = chosen
+                                rel.current = md.build(
+                                    model_kind, random_state=cfg.random_state,
+                                    logreg_c=cfg.logreg_c,
+                                    scaler_kind=chosen).fit(first.X, first.y)
+                                rel.current_score = metric.score(
+                                    first.y, rel.current.predict(first.X))
+                                ref_score = rel.current_score
+                                best = ref_score
 
                 # ① 监测
                 rep = monitor.check(batch.X, cfg.psi_mid)   # 超标比例按“重型阈值”算
