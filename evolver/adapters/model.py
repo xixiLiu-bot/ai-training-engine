@@ -18,10 +18,14 @@ TASK_OF = {**{k: "classification" for k in CLASSIFIERS},
            **{k: "regression" for k in REGRESSORS}}
 
 
-def _make_estimator(kind: str, random_state: int):
+def _make_estimator(kind: str, random_state: int, logreg_c: float = 1.0):
     if kind == "logreg":
+        # C 是正则强度的倒数：C 越小正则越强。
+        # sklearn 默认 C=1.0；小样本 + 高维时加强正则通常更稳
+        # （实测气体数据 C=0.01 时单批 F1 从 0.263 升到 0.378）。
         from sklearn.linear_model import LogisticRegression
-        return LogisticRegression(max_iter=1000, random_state=random_state)
+        return LogisticRegression(C=logreg_c, max_iter=1000,
+                                  random_state=random_state)
     if kind == "gbdt":
         from sklearn.ensemble import HistGradientBoostingClassifier
         return HistGradientBoostingClassifier(random_state=random_state)
@@ -135,12 +139,14 @@ class SklearnModelAdapter:
     这样“只重算均值方差、不动模型权重”这种**零成本**更新才做得到。
     """
 
-    def __init__(self, kind: str = "logreg", random_state: int = 0):
+    def __init__(self, kind: str = "logreg", random_state: int = 0,
+                 logreg_c: float = 1.0):
         from sklearn.preprocessing import StandardScaler
         self.kind = kind
         self.random_state = random_state
         self.scaler = StandardScaler()
-        self.est = _make_estimator(kind, random_state)
+        self.logreg_c = float(logreg_c)
+        self.est = _make_estimator(kind, random_state, logreg_c)
         self.n_features_in_: int | None = None
         # 【整改 B3】输出校准参数。None = 未校准；结构见 calibrate_output()
         self.calib: dict | None = None
@@ -259,6 +265,14 @@ class SklearnModelAdapter:
 
     # ---- 便宜的更新手段 ----
     def refresh_normalization(self, X):
+        # 这就是文献里的 AdaBN（Adaptive Batch Normalization）：
+        # 域偏移时不用重训权重，只把归一化统计量换成目标域的。
+        # Li et al., "Revisiting Batch Normalization For Practical Domain Adaptation",
+        # ICLR 2017 Workshop, arXiv:1603.04779
+        #
+        # 下一步可升级为 CORAL（Sun & Saenko, ECCV 2016, arXiv:1607.01719）：
+        # 连协方差一起对齐，而不只是逐特征的均值/方差。
+        # 详见 docs/文献-逻辑回归与校准.md
         """只重算标准化统计量（均值/方差），模型权重不动。成本≈0。"""
         self.scaler.fit(X)
         return self
@@ -286,6 +300,7 @@ class SklearnModelAdapter:
 
 
 def build(kind: str = "logreg", **kwargs) -> SklearnModelAdapter:
+    """按名字造模型。kwargs 会透传给 SklearnModelAdapter（如 logreg_c）。"""
     return SklearnModelAdapter(kind=kind, **kwargs)
 
 

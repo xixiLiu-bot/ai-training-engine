@@ -224,6 +224,8 @@ def main():
     ap.add_argument("--model", default=None,
                     choices=["logreg", "gbdt", "rf", "mlp", "gnb", "ridge"],
                     help="不填则按任务类型自动选：分类=logreg，回归=ridge")
+    ap.add_argument("--logreg-c", type=float, default=None,
+                    help="逻辑回归正则强度倒数（默认 1.0，越小正则越强）")
     ap.add_argument("--seed", type=int, default=None,
                     help="随机种子（不填用 config 默认 0）")
     ap.add_argument("--out", default="out")
@@ -292,6 +294,8 @@ def main():
         cfg.psi_mid = args.psi_mid
     if args.seed is not None:
         cfg.random_state = args.seed
+    if args.logreg_c is not None:
+        cfg.logreg_c = args.logreg_c
     if args.ratio_th is not None:
         cfg.psi_ratio_th = args.ratio_th
     cfg.detector = args.detector
@@ -400,7 +404,7 @@ def main():
         # 评测协议：一问一答。没交卷就拿不到下一批；偷看未来会被直接拦下。
         proto = LocalEvaluator(adapter, strict=True)
         first = proto.next_batch()
-        base = md.build(model_kind, random_state=cfg.random_state).fit(first.X, first.y)
+        base = md.build(model_kind, random_state=cfg.random_state, logreg_c=cfg.logreg_c).fit(first.X, first.y)
 
         baseline = base.clone()            # 冻结，永不更新
         rel = rl.ReleaseManager(base.clone(), 0.0, cfg.gate_margin,
@@ -535,8 +539,8 @@ def main():
                         cand = rel.current.clone().fit_continue(
                             Xw, yw, ww, refresh_scaler=True)
                     except Exception:                 # noqa: BLE001
-                        cand = md.build(model_kind, random_state=cfg.random_state
-                                        ).fit(Xw, yw, ww)
+                        cand = md.build(model_kind, random_state=cfg.random_state,
+                                        logreg_c=cfg.logreg_c).fit(Xw, yw, ww)
 
                 if cand is not None:
                     shadow = ev.shadow(rel.current, cand, batch, metric)
