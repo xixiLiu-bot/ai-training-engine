@@ -222,7 +222,7 @@ def main():
                     choices=["synthetic", "gas", "gas_drift", "synthetic_rul",
                              "bearing", "rul"])
     ap.add_argument("--model", default=None,
-                    choices=["logreg", "gbdt", "rf", "mlp", "ridge"],
+                    choices=["logreg", "gbdt", "rf", "mlp", "gnb", "ridge"],
                     help="不填则按任务类型自动选：分类=logreg，回归=ridge")
     ap.add_argument("--seed", type=int, default=None,
                     help="随机种子（不填用 config 默认 0）")
