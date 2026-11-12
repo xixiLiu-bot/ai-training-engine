@@ -756,7 +756,10 @@ def main():
                         "noop": "-"}.get(rel_rec["decision"], rel_rec["decision"])
                 src = {"rule": "规则", "rule+llm": "规则+LLM",
                        "llm": "LLM"}.get(dec.get("source", "rule"), "规则")
-                print(f"  b{b:02d} | 基线 {f1_base:.3f} | 系统 {f1_sys:.3f} | "
+                _sh = ((lambda v: -v)
+                       if getattr(metric, "direction", "higher") == "lower"
+                       else (lambda v: v))
+                print(f"  b{b:02d} | 基线 {_sh(f1_base):.3f} | 系统 {_sh(f1_sys):.3f} | "
                       f"PSI {rep['psi_mean']:.3f} | {diag['kind']:9s} | "
                       f"{dec['action']:20s} | {flag} | {src}")
 
@@ -872,7 +875,13 @@ def main():
                               if r.get("f1_baseline") is not None])) if valid else float("nan")
     avg_sys = float(np.mean([r["f1_system"] for r in valid])) if valid else float("nan")
 
-    print(f"\n平均分  基线 {avg_base:.3f}  系统 {avg_sys:.3f}")
+    # 回归任务内部把 MAE 取负号（为了让门控统一用"越大越好"），
+    # 但对外必须按 MAE 原值显示——否则表格里出现 -17.94，读者会以为分数是负的。
+    is_reg = (getattr(metric, "direction", "higher") == "lower")
+    show = (lambda v: -v) if is_reg else (lambda v: v)
+    label = "平均MAE" if is_reg else "平均分 "
+    print(f"\n{label}  基线 {show(avg_base):.3f}  系统 {show(avg_sys):.3f}"
+          + ("   （越小越好）" if is_reg else ""))
     print(f"决策    动作 {n_act} 次 | 上线 {n_acc} 次 | 回滚 {n_roll} 次")
     print(f"账本    {ledger.summary()}")
     if agent.enabled:
