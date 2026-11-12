@@ -10,6 +10,11 @@
     并按惯例截断到 125（piecewise linear）——超过 125 的部分视为"健康"，
     因为早期退化信号不可辨识，强行拟合会伤害 MAE。
 
+特征工程（--features）：
+    raw      只用 21 个传感器的原始读数（去掉常数列）
+    rolling  原始 + 每台发动机的滚动均值/标准差（窗口 5/10）+ 一阶差分
+             —— 退化是过程，单点读数信息量不够；实测 MAE 明显更低
+
 切批方式：
     默认按「发动机」切——100 台分成 10 批，每批 10 台。
     每批是不同发动机的完整寿命段，漂移来自个体差异与磨损状态差异。
@@ -18,7 +23,8 @@
     另有 --by cycle：按周期窗口切，每批是所有发动机在同一时间窗的切片。
 
 用法：
-    python scripts/prepare_rul.py                    # FD001，默认 10 批
+    python scripts/prepare_rul.py                    # FD001，默认 10 批，rolling 特征
+    python scripts/prepare_rul.py --features raw     # 只用原始读数
     python scripts/prepare_rul.py --subset FD002     # 更复杂（6 个工况）
     python scripts/prepare_rul.py --by cycle --batches 8
 """
@@ -29,6 +35,7 @@ import glob
 import os
 
 import numpy as np
+import pandas as pd
 
 RUL_CAP = 125.0
 
@@ -40,6 +47,33 @@ def load_cmapss(path: str) -> np.ndarray:
     return d
 
 
+def build_features(df: pd.DataFrame, sensors: list[str], mode: str) -> np.ndarray:
+    """按发动机分组的特征工程。df 必须已按 (unit, cycle) 排好序。"""
+    raw = df[sensors].to_numpy(dtype=float)
+    if mode == "raw":
+        return raw
+
+    parts = [raw]
+    grouped = df.groupby("unit")[sensors]
+    if mode == "lite":
+        # 只加"趋势"：窗口 5 的滚动均值 + 一阶差分（45 维，避免过拟合）
+        mean = grouped.transform(lambda s: s.rolling(5, min_periods=1).mean())
+        parts.append(mean.to_numpy(dtype=float))
+        diff = df.groupby("unit")[sensors].diff().fillna(0.0)
+        parts.append(diff.to_numpy(dtype=float))
+        return np.hstack(parts)
+
+    for window in (5, 10):
+        mean = grouped.transform(lambda s: s.rolling(window, min_periods=1).mean())
+        std = grouped.transform(lambda s: s.rolling(window, min_periods=1).std())
+        parts.append(mean.to_numpy(dtype=float))
+        parts.append(std.fillna(0.0).to_numpy(dtype=float))
+    # 一阶差分：当前周期相对上一周期的变化速度
+    diff = df.groupby("unit")[sensors].diff().fillna(0.0)
+    parts.append(diff.to_numpy(dtype=float))
+    return np.hstack(parts)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=r"data/CMAPSSData")
@@ -48,6 +82,8 @@ def main():
     ap.add_argument("--out", default="data/rul")
     ap.add_argument("--batches", type=int, default=10)
     ap.add_argument("--by", default="unit", choices=["unit", "cycle"])
+    ap.add_argument("--features", default="lite",
+                    choices=["raw", "lite", "rolling"])
     ap.add_argument("--rul-cap", type=float, default=RUL_CAP)
     args = ap.parse_args()
 
@@ -70,46 +106,57 @@ def main():
     keep = std > 1e-6
     feat = feat[:, keep]
 
-    # 标签：每台发动机的剩余寿命，截断到上限
-    max_cycle = {u: cycle[unit == u].max() for u in np.unique(unit)}
-    rul = np.array([max_cycle[u] - c for u, c in zip(unit, cycle)], dtype=float)
-    rul = np.clip(rul, 0.0, args.rul_cap)
+    sensors = [f"s{i}" for i in range(feat.shape[1])]
+    df = pd.DataFrame(feat, columns=sensors)
+    df["unit"] = unit
+    df["cycle"] = cycle
+    df = df.sort_values(["unit", "cycle"]).reset_index(drop=True)
 
-    units = np.unique(unit)
+    # 标签：每台发动机的剩余寿命，截断到上限
+    max_cycle = df.groupby("unit")["cycle"].transform("max")
+    rul = np.clip((max_cycle - df["cycle"]).to_numpy(dtype=float), 0.0, args.rul_cap)
+
+    X = build_features(df, sensors, args.features)
+    unit_sorted = df["unit"].to_numpy()
+    cycle_sorted = df["cycle"].to_numpy()
+
+    units = np.unique(unit_sorted)
     os.makedirs(args.out, exist_ok=True)
 
     if args.by == "unit":
         groups = np.array_split(units, args.batches)
-        slices = [(np.isin(unit, g), f"发动机 {g[0]}~{g[-1]}（{len(g)} 台）")
+        slices = [(np.isin(unit_sorted, g), f"发动机 {g[0]}~{g[-1]}（{len(g)} 台）")
                   for g in groups]
     else:
-        order = np.argsort(cycle)
+        order = np.argsort(cycle_sorted)
         parts = np.array_split(order, args.batches)
-        slices = [(np.isin(np.arange(len(cycle)), p),
-                   f"周期 {cycle[p].min()}~{cycle[p].max()}") for p in parts]
+        slices = [(np.isin(np.arange(len(cycle_sorted)), p),
+                   f"周期 {cycle_sorted[p].min()}~{cycle_sorted[p].max()}") for p in parts]
 
     index = []
     for i, (mask, desc) in enumerate(slices, 1):
-        X = feat[mask]
-        y = rul[mask]
-        if len(y) == 0:
+        Xb = X[mask]
+        yb = rul[mask]
+        if len(yb) == 0:
             print(f"  跳过第 {i} 批：空")
             continue
         path_out = os.path.join(args.out, f"batch_{i:02d}.npz")
-        np.savez_compressed(path_out, X=X, y=y,
-                            units=unit[mask], cycles=cycle[mask])
-        index.append((i, desc, len(y), float(y.mean())))
-        print(f"  batch_{i:02d}  {desc:<26} {len(y):>5} 条  "
-              f"RUL 均值 {y.mean():6.1f}  范围 {y.min():.0f}~{y.max():.0f}")
+        np.savez_compressed(path_out, X=Xb, y=yb,
+                            units=unit_sorted[mask], cycles=cycle_sorted[mask])
+        index.append((i, desc, len(yb), float(yb.mean())))
+        print(f"  batch_{i:02d}  {desc:<26} {len(yb):>5} 条  "
+              f"RUL 均值 {yb.mean():6.1f}  范围 {yb.min():.0f}~{yb.max():.0f}")
 
     with open(os.path.join(args.out, "index.txt"), "w", encoding="utf-8") as f:
-        f.write(f"subset\t{args.subset}\tby={args.by}\trul_cap={args.rul_cap}\n")
+        f.write(f"subset\t{args.subset}\tby={args.by}\trul_cap={args.rul_cap}\t"
+                f"features={args.features}\tn_features={X.shape[1]}\n")
         f.write("batch\tdescription\tn\trul_mean\n")
         for r in index:
             f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]:.1f}\n")
 
     print(f"\n完成：{len(index)} 个批次 → {args.out}/")
     print(f"保留传感器 {int(keep.sum())}/{len(keep)} 个（去掉 {int((~keep).sum())} 个常数）")
+    print(f"特征工程：{args.features}，共 {X.shape[1]} 维")
     print(f"标签：RUL 截断到 {args.rul_cap:.0f}，回归任务（指标 = MAE / RMSE）")
 
 

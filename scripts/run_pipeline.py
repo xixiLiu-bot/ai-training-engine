@@ -222,8 +222,8 @@ def main():
                     choices=["synthetic", "gas", "gas_drift", "synthetic_rul",
                              "bearing", "rul"])
     ap.add_argument("--model", default=None,
-                    choices=["logreg", "gbdt", "rf", "mlp", "gnb", "sgd", "ridge"],
-                    help="不填则按任务类型自动选：分类=logreg，回归=ridge")
+                    choices=list(md.CLASSIFIERS) + list(md.REGRESSORS),
+                    help="不填则按任务类型自动选：分类=logreg，回归=hgb")
     ap.add_argument("--scaler", default=None,
                     choices=["standard", "quantile", "auto"],
                     help="标准化方式：standard=均值/方差，quantile=百分位，auto=第2批时自动选")
