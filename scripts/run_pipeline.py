@@ -445,9 +445,15 @@ def main():
         memory = ExperienceTable()
 
     # ── 阈值自标定：不手工给 --psi-low 时，用前几批的 PSI 自己定 ──
+    # 分类：0.55/1.6（适配 laplace 平滑后的 PSI 尺度）
+    # 回归：1.0/2.0（RUL 的 PSI 水位不同，压低阈值反而多做了无效重训）
     calib = None
     if not args.no_calibrate and args.psi_low is None:
-        calib = ThresholdCalibrator(warmup=args.calib_batches)
+        if task_type == "regression":
+            calib = ThresholdCalibrator(warmup=args.calib_batches,
+                                        low_mult=1.0, mid_mult=2.0)
+        else:
+            calib = ThresholdCalibrator(warmup=args.calib_batches)
 
     # ── 冷启动：取第 1 批、训练初始模型 ──
     # 【A1】这一段原来在 try 之外：第 1 批取不到/训练失败会直接崩、连 metrics.json
