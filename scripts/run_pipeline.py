@@ -221,8 +221,15 @@ def main():
     ap.add_argument("--dataset", default="synthetic",
                     choices=["synthetic", "gas", "gas_drift", "synthetic_rul",
                              "bearing", "rul"])
+    # 韧性测试会用假模型模块模拟故障，它未必有 CLASSIFIERS/REGRESSORS，
+    # 所以这里兜一层，保证"模型模块坏掉"时参数解析仍然可用。
+    try:
+        _model_choices = list(md.CLASSIFIERS) + list(md.REGRESSORS)
+    except AttributeError:
+        _model_choices = ["logreg", "gbdt", "rf", "mlp", "gnb", "sgd",
+                          "ridge", "hgb"]
     ap.add_argument("--model", default=None,
-                    choices=list(md.CLASSIFIERS) + list(md.REGRESSORS),
+                    choices=_model_choices,
                     help="不填则按任务类型自动选：分类=logreg，回归=hgb")
     ap.add_argument("--scaler", default=None,
                     choices=["standard", "quantile", "auto"],
