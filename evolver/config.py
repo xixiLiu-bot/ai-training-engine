@@ -50,5 +50,6 @@ class Config:
     random_state: int = 0
     logreg_c: float = 1.0    # 逻辑回归的正则强度倒数（越小越强）
     scaler_kind: str = "standard"   # standard | quantile（百分位归一）
+    incremental_epochs: int = 3      # 增量更新喂几轮（多了会灾难性遗忘）
     max_snapshots: int = 20     # 保留多少个模型快照（回滚用）
     extra: dict = field(default_factory=dict)

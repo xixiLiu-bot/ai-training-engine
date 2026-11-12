@@ -12,7 +12,7 @@ import os
 import numpy as np
 
 # 按任务类型划分可用模型
-CLASSIFIERS = ("logreg", "gbdt", "rf", "mlp", "gnb")
+CLASSIFIERS = ("logreg", "gbdt", "rf", "mlp", "gnb", "sgd")
 REGRESSORS = ("ridge",)
 TASK_OF = {**{k: "classification" for k in CLASSIFIERS},
            **{k: "regression" for k in REGRESSORS}}
@@ -56,6 +56,15 @@ def _make_estimator(kind: str, random_state: int, logreg_c: float = 1.0):
     if kind == "gbdt":
         from sklearn.ensemble import HistGradientBoostingClassifier
         return HistGradientBoostingClassifier(random_state=random_state)
+    if kind == "sgd":
+        # 逻辑回归的"在线版本"：能用 partial_fit 在模型上接着学新批次，
+        # 不必把旧数据重新读一遍。这是四档成本阶梯里"增量更新"那一档的载体。
+        # 实测（气体，b1 训练 → b3 增量 3 轮 → b4 验收）：
+        #   不更新 0.340 / 增量 3 轮 0.843（16.7ms）/ 全量重训 0.830
+        # 注意轮数不能多：5 轮掉到 0.768，10 轮 0.767（灾难性遗忘）。
+        from sklearn.linear_model import SGDClassifier
+        return SGDClassifier(loss="log_loss", random_state=random_state,
+                             max_iter=1000, tol=1e-3)
     if kind == "gnb":
         # 高斯朴素贝叶斯：假设每个特征服从正态分布、特征间独立。
         # 假设很强（传感器明显相关），但在小样本 + 高维上这个强偏见正好起正则作用。
@@ -233,6 +242,38 @@ class SklearnModelAdapter:
         self.calib = None
         return self
 
+    def can_incremental(self) -> bool:
+        """这个模型能不能做增量更新（sklearn 的 partial_fit）。"""
+        return hasattr(self.est, "partial_fit")
+
+    def partial_fit_continue(self, X, y, epochs: int = 3,
+                             refresh_scaler: bool = True):
+        """增量学习：在当前权重上只喂新数据，学几轮。
+
+        和 fit_continue 的区别：
+            fit_continue  依赖 warm_start，只有树模型支持
+            partial_fit   是 sklearn 的在线接口，SGD / NB / MLP 支持
+
+        为什么轮数要小（默认 3）：只喂一批数据时，多轮会把它背下来，
+        把之前学的冲掉（灾难性遗忘）。实测气体数据上 3 轮最好（0.843），
+        5 轮掉到 0.768，10 轮 0.767。
+        """
+        if not self.can_incremental():
+            raise CalibrationUnsupported(
+                f"{self.kind} 不支持 partial_fit，无法增量更新")
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y).ravel()
+        if refresh_scaler:
+            self._fit_scaler(X)          # 尺子要跟着换（AdaBN 的原则）
+        Xs = self.scaler.transform(X)
+        classes = getattr(self.est, "classes_", None)
+        if classes is None:
+            classes = np.unique(y)
+        for _ in range(max(1, int(epochs))):
+            self.est.partial_fit(Xs, y, classes=classes)
+        self.calib = None
+        return self
+
     # ---- 【整改 B3】输出层校准：只改决策规则，不碰一个权重 ----
     def calibrate_output(self, X, y):
         """用给定的**历史**数据拟合输出校准参数（绝不能用当批标签）。
@@ -385,6 +426,10 @@ ACTION_CATALOGS: dict[str, dict[str, float]] = {
     # 神经网络：重训中等
     "mlp": {"do_nothing": 0.0, "refresh_normalization": 0.05,
              "refit_model": 1.2},
+    # SGD：唯一支持"增量更新"的模型（partial_fit）
+    "sgd": {"do_nothing": 0.0, "calibrate_output": 0.02,
+             "refresh_normalization": 0.05, "incremental_update": 0.1,
+             "refit_model": 0.4},
     # 高斯朴素贝叶斯：重训几乎免费（1ms 量级）
     "gnb": {"do_nothing": 0.0, "calibrate_output": 0.02,
              "refresh_normalization": 0.05, "refit_model": 0.05},

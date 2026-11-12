@@ -222,11 +222,13 @@ def main():
                     choices=["synthetic", "gas", "gas_drift", "synthetic_rul",
                              "bearing", "rul"])
     ap.add_argument("--model", default=None,
-                    choices=["logreg", "gbdt", "rf", "mlp", "gnb", "ridge"],
+                    choices=["logreg", "gbdt", "rf", "mlp", "gnb", "sgd", "ridge"],
                     help="不填则按任务类型自动选：分类=logreg，回归=ridge")
     ap.add_argument("--scaler", default=None,
                     choices=["standard", "quantile", "auto"],
                     help="标准化方式：standard=均值/方差，quantile=百分位，auto=第2批时自动选")
+    ap.add_argument("--incremental-epochs", type=int, default=None,
+                    help="增量更新喂几轮（默认 3，多了会灾难性遗忘）")
     ap.add_argument("--logreg-c", type=float, default=None,
                     help="逻辑回归正则强度倒数（默认 1.0，越小正则越强）")
     ap.add_argument("--seed", type=int, default=None,
@@ -297,6 +299,8 @@ def main():
         cfg.psi_mid = args.psi_mid
     if args.seed is not None:
         cfg.random_state = args.seed
+    if args.incremental_epochs is not None:
+        cfg.incremental_epochs = args.incremental_epochs
     if args.logreg_c is not None:
         cfg.logreg_c = args.logreg_c
     if args.scaler is not None:
@@ -590,6 +594,21 @@ def main():
                                "reason": msg, "note": msg, "cost_sec": 0.0}
                 elif dec["action"] == "refresh_normalization":
                     cand = rel.current.clone().refresh_normalization(batch.X)
+                elif dec["action"] == "incremental_update":
+                    # 增量学习：只喂最近一批（不是 b-4..b-1 的四批），学几轮。
+                    # 这正是它便宜的原因：既不看旧数据，也不多轮迭代。
+                    Xw, yw, _w = recent_window(proto, max(1, b - 1), b - 1)
+                    try:
+                        cand = rel.current.clone().partial_fit_continue(
+                            Xw, yw, epochs=cfg.incremental_epochs)
+                    except Exception as exc:          # noqa: BLE001
+                        cand = None
+                        msg = f"增量更新不可用，本批降级为 do_nothing：{exc}"
+                        errors.append({"batch": b, "stage": "incremental",
+                                       "error": str(exc)})
+                        print(f"  b{b:02d} | [!] {msg}")
+                        dec = {**dec, "action": "do_nothing", "reason": msg,
+                               "note": msg, "cost_sec": 0.0}
                 elif dec["action"] == "refit_model":
                     # 只能用 b-1 及更早的数据训练（标签滞后），再到第 b 批上检验。
                     # 用第 b 批的标签训练、又在第 b 批上验收 = 数据泄漏，分数会虚高。
