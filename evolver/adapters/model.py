@@ -168,6 +168,69 @@ def _best_logit_biases(proba, y, classes, rounds: int = 2,
     return b
 
 
+# ─────────────────────────────────────────────────────────────
+# 【改进 1/4】阈值校准 + 特征筛选的公共实现
+# ─────────────────────────────────────────────────────────────
+def _fit_calibration(proba, y, classes) -> dict | None:
+    """用一批带标签数据拟合输出校准参数。二分类=阈值，多分类=逐类 logit 偏置。"""
+    proba = np.asarray(proba, dtype=float)
+    y = np.asarray(y).ravel()
+    classes = np.asarray(classes)
+    k = proba.shape[1]
+    if k == 2:
+        return {"kind": "threshold",
+                "t": float(_best_threshold(proba[:, 1], y, classes[1])),
+                "classes": [float(c) for c in classes], "k": int(k)}
+    if k <= 10:
+        return {"kind": "bias",
+                "b": [float(v) for v in _best_logit_biases(proba, y, classes)],
+                "classes": [float(c) for c in classes], "k": int(k)}
+    return None
+
+
+def _apply_calibration(proba, calib: dict) -> np.ndarray:
+    proba = np.asarray(proba, dtype=float)
+    classes = np.asarray(calib["classes"])
+    if calib["kind"] == "threshold":
+        idx = (proba[:, 1] >= calib["t"]).astype(int)
+        return classes[idx]
+    logp = np.log(np.clip(proba, 1e-12, None))
+    return classes[np.argmax(logp + np.asarray(calib["b"]), axis=1)]
+
+
+def _feature_mask(X, y, task_type: str, method: str, keep_frac: float):
+    """按单变量打分选特征。返回 bool mask；None = 全保留。
+
+    fclass：分类用 ANOVA F，回归用 F 检验；var：按方差。
+    只在训练批上选一次，之后固定（漂移检测仍用全部特征，模型只用子集）。
+    """
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y).ravel()
+    n = X.shape[1]
+    if method in (None, "", "none"):
+        return None
+    k = int(round(n * float(keep_frac)))
+    k = max(2, min(n, k))
+    if k >= n:
+        return None
+    if method == "var":
+        scores = X.var(axis=0)
+    elif method == "fclass":
+        from sklearn.feature_selection import f_classif, f_regression
+        if (task_type or "").lower() == "regression":
+            scores, _ = f_regression(X, y)
+        else:
+            scores, _ = f_classif(X, y)
+        scores = np.nan_to_num(np.asarray(scores, dtype=float),
+                               nan=0.0, posinf=0.0, neginf=0.0)
+    else:
+        raise ValueError(f"未知特征筛选方式 '{method}'，可选：none / var / fclass")
+    idx = np.argsort(scores)[-k:]
+    mask = np.zeros(n, dtype=bool)
+    mask[idx] = True
+    return mask
+
+
 class SklearnModelAdapter:
     """把 sklearn 模型包装成闭环能调的统一对象。
 
@@ -176,7 +239,9 @@ class SklearnModelAdapter:
     """
 
     def __init__(self, kind: str = "logreg", random_state: int = 0,
-                 logreg_c: float = 1.0, scaler_kind: str = "standard"):
+                 logreg_c: float = 1.0, scaler_kind: str = "standard",
+                 feature_select: str = "none", feature_k: float = 0.6,
+                 auto_calibrate: bool = False):
         from sklearn.preprocessing import StandardScaler
         self.kind = kind
         self.random_state = random_state
@@ -185,8 +250,49 @@ class SklearnModelAdapter:
         self.logreg_c = float(logreg_c)
         self.est = _make_estimator(kind, random_state, logreg_c)
         self.n_features_in_: int | None = None
+        # 【改进 4】特征筛选：none | var | fclass；feature_k=保留比例
+        self.feature_select = feature_select or "none"
+        self.feature_k = float(feature_k)
+        self.feature_mask = None
+        # 【改进 1】自动输出校准：训练后用留出集验证，只有变好才启用
+        self.auto_calibrate = bool(auto_calibrate)
         # 【整改 B3】输出校准参数。None = 未校准；结构见 calibrate_output()
         self.calib: dict | None = None
+
+    def _masked(self, X):
+        X = np.asarray(X, dtype=float)
+        if self.feature_mask is None:
+            return X
+        return X[:, self.feature_mask]
+
+    def _auto_calibrate(self, Xm, y, holdout: float = 0.25,
+                        min_gain: float = 0.002):
+        """训练后自动校准：在留出集上定阈值，在剩余数据上验证，变好才采纳。
+
+        注意：校准参数只在 holdout 上拟合，验证用的是另一部分，
+        避免"用同一批数据既定阈值又自证"。
+        """
+        self.calib = None
+        try:
+            if not hasattr(self.est, "predict_proba") or len(y) < 60:
+                return
+            rng = np.random.default_rng(self.random_state)
+            idx = rng.permutation(len(y))
+            n_hold = max(30, int(len(y) * holdout))
+            hold, rest = idx[:n_hold], idx[n_hold:]
+            classes = np.asarray(getattr(self.est, "classes_", np.unique(y)))
+            proba_hold = self.est.predict_proba(self.scaler.transform(Xm[hold]))
+            calib = _fit_calibration(proba_hold, y[hold], classes)
+            if calib is None or len(rest) == 0:
+                return
+            proba_rest = self.est.predict_proba(self.scaler.transform(Xm[rest]))
+            base_pred = classes[np.argmax(proba_rest, axis=1)]
+            base_score = _macro_f1(y[rest], base_pred)
+            cal_score = _macro_f1(y[rest], _apply_calibration(proba_rest, calib))
+            if cal_score > base_score + min_gain:
+                self.calib = calib
+        except Exception:                 # noqa: BLE001  校准失败绝不阻断训练
+            self.calib = None
 
     def _fit_scaler(self, X, sample_weight=None):
         """拟合尺子。不是所有 scaler 都吃 sample_weight（如 QuantileTransformer）。"""
@@ -200,14 +306,23 @@ class SklearnModelAdapter:
 
     # ---- 训练 ----
     def fit(self, X, y, sample_weight=None):
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y).ravel()
         self.n_features_in_ = X.shape[1]
-        self._fit_scaler(X, sample_weight)
-        Xs = self.scaler.transform(X)
+        # 【改进 4】只在当前训练批上选一次特征，之后固定
+        self.feature_mask = _feature_mask(
+            X, y, model_task(self.kind), self.feature_select, self.feature_k)
+        Xm = self._masked(X)
+        self._fit_scaler(Xm, sample_weight)
+        Xs = self.scaler.transform(Xm)
         if sample_weight is not None:
             self.est.fit(Xs, y, sample_weight=sample_weight)
         else:
             self.est.fit(Xs, y)
         self.calib = None                 # 重新训练后旧校准失效
+        # 【改进 1】自动阈值校准（仅分类，留出集验证，不改善就不启用）
+        if self.auto_calibrate and model_task(self.kind) == "classification":
+            self._auto_calibrate(Xm, y)
         return self
 
     # ---- 续训（warm start）：不把学过的丢掉，在现权重上接着训 ----
@@ -227,11 +342,15 @@ class SklearnModelAdapter:
         y = np.asarray(y).ravel()
         if not self.is_fitted() or not hasattr(self.est, "warm_start"):
             return self.fit(X, y, sample_weight)
+        if self.feature_mask is None and self.feature_select not in ("none", "", None):
+            self.feature_mask = _feature_mask(
+                X, y, model_task(self.kind), self.feature_select, self.feature_k)
+        Xm = self._masked(X)
 
         self.est.warm_start = True
         if refresh_scaler:
-            self._fit_scaler(X, sample_weight)
-        Xs = self.scaler.transform(X)
+            self._fit_scaler(Xm, sample_weight)
+        Xs = self.scaler.transform(Xm)
         try:
             if sample_weight is not None:
                 self.est.fit(Xs, y, sample_weight=sample_weight)
@@ -295,22 +414,13 @@ class SklearnModelAdapter:
 
         X = np.asarray(X, dtype=float)
         y = np.asarray(y).ravel()
-        proba = self.est.predict_proba(self.scaler.transform(X))
+        proba = self.est.predict_proba(self.scaler.transform(self._masked(X)))
         classes = np.asarray(getattr(self.est, "classes_", np.unique(y)))
-        k = proba.shape[1]
-
-        if k == 2:
-            t = _best_threshold(proba[:, 1], y, classes[1])
-            self.calib = {"kind": "threshold", "t": float(t),
-                          "classes": [float(c) for c in classes],
-                          "k": int(k)}
-        elif k <= 10:
-            b = _best_logit_biases(proba, y, classes)
-            self.calib = {"kind": "bias", "b": [float(v) for v in b],
-                          "classes": [float(c) for c in classes],
-                          "k": int(k)}
-        else:
-            raise CalibrationUnsupported(f"类别数 {k} 过多（>10），暂不支持输出校准")
+        calib = _fit_calibration(proba, y, classes)
+        if calib is None:
+            raise CalibrationUnsupported(
+                f"类别数 {proba.shape[1]} 过多（>10），暂不支持输出校准")
+        self.calib = calib
         return self
 
     def calibration_summary(self) -> dict | None:
@@ -325,21 +435,14 @@ class SklearnModelAdapter:
 
     # ---- 推理 ----
     def predict(self, X):
-        Xs = self.scaler.transform(X)
+        Xs = self.scaler.transform(self._masked(X))
         if self.calib is None:
             return self.est.predict(Xs)
-
-        proba = self.est.predict_proba(Xs)
-        classes = np.asarray(self.calib["classes"])
-        if self.calib["kind"] == "threshold":
-            idx = (proba[:, 1] >= self.calib["t"]).astype(int)
-            return classes[idx]
-        logp = np.log(np.clip(proba, 1e-12, None))
-        return classes[np.argmax(logp + np.asarray(self.calib["b"]), axis=1)]
+        return _apply_calibration(self.est.predict_proba(Xs), self.calib)
 
     def predict_proba(self, X):
         if hasattr(self.est, "predict_proba"):
-            return self.est.predict_proba(self.scaler.transform(X))
+            return self.est.predict_proba(self.scaler.transform(self._masked(X)))
         raise AttributeError(f"{self.kind} 不支持 predict_proba")
 
     # ---- 便宜的更新手段 ----
@@ -353,7 +456,7 @@ class SklearnModelAdapter:
         # 连协方差一起对齐，而不只是逐特征的均值/方差。
         # 详见 docs/文献-逻辑回归与校准.md
         """只重算标准化统计量（均值/方差），模型权重不动。成本≈0。"""
-        self.scaler.fit(X)
+        self.scaler.fit(self._masked(X))
         return self
 
     def is_fitted(self) -> bool:

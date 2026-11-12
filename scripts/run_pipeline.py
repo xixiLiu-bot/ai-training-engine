@@ -254,6 +254,14 @@ def main():
     ap.add_argument("--enable-output-calibration", action="store_true",
                     help="启用最便宜的一档动作 calibrate_output（改输出）。"
                          "默认关闭以保持既有结果不变")
+    ap.add_argument("--feature-select", default=None,
+                    choices=["none", "var", "fclass"],
+                    help="特征筛选方式：none（默认）/ var（方差）/ fclass（F 检验）")
+    ap.add_argument("--feature-k", type=float, default=None,
+                    help="特征保留比例（默认 0.6）")
+    ap.add_argument("--auto-calibrate", action="store_true",
+                    help="训练后自动做输出校准：留出集定阈值、另一部分验证，"
+                         "不改善就不启用")
     ap.add_argument("--no-recorder", action="store_true",
                     help="不写 run.jsonl 实验记录")
     ap.add_argument("--frozen-config", default=None,
@@ -278,6 +286,10 @@ def main():
                     help="用前几批观察 PSI 来标定阈值")
     ap.add_argument("--ratio-th", type=float, default=None,
                     help="超标比例阈值（默认 0.85）")
+    ap.add_argument("--refit-window", type=int, default=None,
+                    help="重训用最近几批历史（默认 4）")
+    ap.add_argument("--refit-tau", type=float, default=None,
+                    help="重训样本时间衰减（默认 0.5；越小越只看近期）")
     ap.add_argument("--llm", default="none",
                     choices=["none", "mock", "mock_bad",
                              "pydantic-test", "pydantic-sim", "pydantic",
@@ -320,10 +332,19 @@ def main():
         cfg.scaler_kind = "standard"
     if args.ratio_th is not None:
         cfg.psi_ratio_th = args.ratio_th
+    if args.refit_window is not None:
+        cfg.refit_window = max(1, int(args.refit_window))
+    if args.refit_tau is not None:
+        cfg.refit_tau = float(args.refit_tau)
     cfg.detector = args.detector
     cfg.gate_window = args.gate_window
     cfg.gate_bootstrap = args.gate_bootstrap
     cfg.enable_output_calibration = bool(args.enable_output_calibration)
+    if args.feature_select is not None:
+        cfg.feature_select = args.feature_select
+    if args.feature_k is not None:
+        cfg.feature_k = float(args.feature_k)
+    cfg.auto_calibrate = bool(args.auto_calibrate)
 
     adapter = ds.build(args.dataset)
     # 训练/测试切分：只跑其中一段（迁移实验用）
@@ -350,6 +371,15 @@ def main():
         catalog = md.action_catalog(model_kind)
     except Exception:                              # noqa: BLE001
         catalog = None
+
+    # 统一构造入口：特征筛选 / 自动校准参数只在这里传一次
+    def _mk(scaler=None):
+        return md.build(
+            model_kind, random_state=cfg.random_state, logreg_c=cfg.logreg_c,
+            scaler_kind=scaler or cfg.scaler_kind,
+            feature_select=cfg.feature_select,
+            feature_k=cfg.feature_k,
+            auto_calibrate=cfg.auto_calibrate)
 
     if task_warn:
         print(f"[!] {task_warn}")
@@ -426,8 +456,7 @@ def main():
         # 评测协议：一问一答。没交卷就拿不到下一批；偷看未来会被直接拦下。
         proto = LocalEvaluator(adapter, strict=True)
         first = proto.next_batch()
-        base = md.build(model_kind, random_state=cfg.random_state, logreg_c=cfg.logreg_c,
-                       scaler_kind=cfg.scaler_kind).fit(first.X, first.y)
+        base = _mk().fit(first.X, first.y)
 
         baseline = base.clone()            # 冻结，永不更新
         rel = rl.ReleaseManager(base.clone(), 0.0, cfg.gate_margin,
@@ -515,10 +544,7 @@ def main():
                         probe = {}
                         for sc_name in ("standard", "quantile"):
                             try:
-                                pm = md.build(
-                                    model_kind, random_state=cfg.random_state,
-                                    logreg_c=cfg.logreg_c,
-                                    scaler_kind=sc_name).fit(first.X, first.y)
+                                pm = _mk(scaler=sc_name).fit(first.X, first.y)
                                 scores = []
                                 for Xp, yp in scaler_probe:
                                     pm2 = pm.clone().refresh_normalization(Xp)
@@ -534,10 +560,7 @@ def main():
                                 + f" → 选 {chosen}")
                             if chosen != cfg.scaler_kind:
                                 cfg.scaler_kind = chosen
-                                rel.current = md.build(
-                                    model_kind, random_state=cfg.random_state,
-                                    logreg_c=cfg.logreg_c,
-                                    scaler_kind=chosen).fit(first.X, first.y)
+                                rel.current = _mk(scaler=chosen).fit(first.X, first.y)
                                 rel.current_score = metric.score(
                                     first.y, rel.current.predict(first.X))
                                 ref_score = rel.current_score
@@ -580,7 +603,7 @@ def main():
                 if dec["action"] == "calibrate_output":
                     # 【B3】只用 b-1 及更早的**已标注**批次拟合校准参数，
                     # 绝不使用当前批标签（否则就是拿验收数据调参）。
-                    Xw, yw, _ww = recent_window(proto, max(1, b - 4), b - 1)
+                    Xw, yw, _ww = recent_window(proto, max(1, b - cfg.refit_window), b - 1, tau=cfg.refit_tau)
                     try:
                         cand = rel.current.clone().calibrate_output(Xw, yw)
                     except Exception as exc:          # noqa: BLE001
@@ -612,7 +635,7 @@ def main():
                 elif dec["action"] == "refit_model":
                     # 只能用 b-1 及更早的数据训练（标签滞后），再到第 b 批上检验。
                     # 用第 b 批的标签训练、又在第 b 批上验收 = 数据泄漏，分数会虚高。
-                    Xw, yw, ww = recent_window(proto, max(1, b - 4), b - 1)
+                    Xw, yw, ww = recent_window(proto, max(1, b - cfg.refit_window), b - 1, tau=cfg.refit_tau)
                     # 续训：在当前权重上接着训，并刷新标准化（实测最优：
                     #   冷启动 128ms/0.785 → 续训+刷尺子 75ms/0.805）
                     # 只续训不刷尺子反而更差（254ms/0.795），所以必须 refresh_scaler=True
@@ -620,9 +643,7 @@ def main():
                         cand = rel.current.clone().fit_continue(
                             Xw, yw, ww, refresh_scaler=True)
                     except Exception:                 # noqa: BLE001
-                        cand = md.build(model_kind, random_state=cfg.random_state,
-                                        logreg_c=cfg.logreg_c,
-                       scaler_kind=cfg.scaler_kind).fit(Xw, yw, ww)
+                        cand = _mk().fit(Xw, yw, ww)
 
                 if cand is not None:
                     shadow = ev.shadow(rel.current, cand, batch, metric)

@@ -39,6 +39,9 @@ class Config:
     margin_relative_floor: float = 1e-9   # baseline≈0 时退回 absolute 的判据
     gate_window: int = 1        # 用最近几批增益做判据（1=只看当前批，旧行为）
     gate_bootstrap: int = 0     # Bootstrap 重采样次数（0=关闭，用窗口均值）
+    # 【调参】重训窗口：用最近几批（b-W .. b-1），以及时间衰减系数
+    refit_window: int = 4
+    refit_tau: float = 0.5
 
     # ---- 预算（对应赛题的“单位增益消耗”）----
     budget_gpu_sec: float = 600.0
@@ -51,5 +54,10 @@ class Config:
     logreg_c: float = 1.0    # 逻辑回归的正则强度倒数（越小越强）
     scaler_kind: str = "standard"   # standard | quantile（百分位归一）
     incremental_epochs: int = 3      # 增量更新喂几轮（多了会灾难性遗忘）
+    # 【改进 4】特征筛选：none | var | fclass；feature_k = 保留比例
+    feature_select: str = "none"
+    feature_k: float = 0.6
+    # 【改进 1】训练后自动输出校准（留出集验证，不改善不启用）
+    auto_calibrate: bool = False
     max_snapshots: int = 20     # 保留多少个模型快照（回滚用）
     extra: dict = field(default_factory=dict)
