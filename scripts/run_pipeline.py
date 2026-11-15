@@ -441,6 +441,9 @@ def main():
 
     rows: list[dict] = []
     errors: list[dict] = []
+    # 与 errors 分开：warnings 是"没做成但不影响结果"的事（例如没装 matplotlib
+    # 导致跳过绘图）。混进 errors 会让一次正常的运行看起来像出错。
+    warnings_list: list[dict] = []
 
     # ── 经验表（策略层自改进）──
     if args.no_memory:
@@ -655,8 +658,24 @@ def main():
                     try:
                         cand = rel.current.clone().fit_continue(
                             Xw, yw, ww, refresh_scaler=True)
-                    except Exception:                 # noqa: BLE001
+                        # 【修复】续训降级必须留痕：类别集合变化时会冷启动重建
+                        fnote = getattr(cand, "fit_note", None)
+                        if fnote and fnote.get("degraded"):
+                            msg = f"续训降级为冷启动：{fnote.get('reason')}"
+                            if fnote.get("classes_before") is not None:
+                                msg += (f"（类别 {fnote['classes_before']} → "
+                                        f"{fnote['classes_after']}）")
+                            print(f"  b{b:02d} | [!] {msg}")
+                            dec = {**dec, "note": msg, "fit_note": fnote}
+                    except Exception as exc:          # noqa: BLE001
                         cand = _mk().fit(Xw, yw, ww)
+                        msg = f"续训不可用，已改为冷启动：{exc}"
+                        print(f"  b{b:02d} | [!] {msg}")
+                        dec = {**dec, "note": msg,
+                               "fit_note": {"degraded": True,
+                                            "reason": f"exception:{type(exc).__name__}",
+                                            "detail": str(exc)[:200],
+                                            "action": "cold_start"}}
 
                 if cand is not None:
                     shadow = ev.shadow(rel.current, cand, batch, metric)
@@ -704,6 +723,8 @@ def main():
                               "latency": dec["llm"].get("latency")}
                              if isinstance(dec.get("llm"), dict) and "action" in dec["llm"] else None),
                     "note": dec.get("note"),
+                    # 【修复】续训是否需要降级、降级原因（None = 未降级）
+                    "fit_note": dec.get("fit_note"),
                     "result": {"f1_baseline": round(f1_base, 4),
                                "f1_before": round(shadow["before"], 4) if shadow else None,
                                "f1_after": round(shadow["after"], 4) if shadow else None},
@@ -845,21 +866,7 @@ def main():
         errors.append({"batch": None, "stage": "driver", "error": msg})
         print(f"[!] 主循环中断：{msg}")
 
-    # ── 收尾：无论前面发生什么，都要写出结果 ──
-    summary = {"dataset": adapter.name, "model": model_kind,
-               "task_type": task_type, "metric": metric.name,
-               "rows": rows, "ledger": ledger.summary(),
-               "protocol": proto.summary(),
-               "errors": errors,
-               "config": {"detector": cfg.detector, "psi_low": cfg.psi_low,
-                          "psi_mid": cfg.psi_mid, "gate_margin": cfg.gate_margin,
-                          "gate_window": cfg.gate_window,
-                          "gate_bootstrap": cfg.gate_bootstrap},
-               "release": {"version": rel.version,
-                           "snapshots": rel.snapshot_versions()}}
-    with open(os.path.join(args.out, "metrics.json"), "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
-
+    # ── 收尾：先画图（可选），再写 metrics.json，这样 warnings 能一并落盘 ──
     concept_start = None
     for b in range(1, adapter.n_batches + 1):
         try:
@@ -870,9 +877,32 @@ def main():
             break
     try:
         plot(rows, os.path.join(args.out, "curve.png"), concept_start)
+    except ImportError as exc:
+        # matplotlib 只用于生成 curve.png，不是闭环运行的必需依赖
+        warnings_list.append({"stage": "plot", "warning": "matplotlib_missing",
+                              "detail": str(exc)[:200]})
+        print("[--] 跳过绘图：未安装 matplotlib（结果不受影响，不会生成 curve.png）")
+        print("     需要曲线图请执行：pip install -r requirements.lock")
     except Exception as exc:                       # noqa: BLE001
-        errors.append({"batch": None, "stage": "plot", "error": str(exc)})
+        warnings_list.append({"stage": "plot", "warning": "plot_failed",
+                              "detail": str(exc)[:200]})
         print(f"[!] 绘图失败（不影响结果）：{exc}")
+
+    # ── 收尾：无论前面发生什么，都要写出结果 ──
+    summary = {"dataset": adapter.name, "model": model_kind,
+               "task_type": task_type, "metric": metric.name,
+               "rows": rows, "ledger": ledger.summary(),
+               "protocol": proto.summary(),
+               "errors": errors,
+               "warnings": warnings_list,
+               "config": {"detector": cfg.detector, "psi_low": cfg.psi_low,
+                          "psi_mid": cfg.psi_mid, "gate_margin": cfg.gate_margin,
+                          "gate_window": cfg.gate_window,
+                          "gate_bootstrap": cfg.gate_bootstrap},
+               "release": {"version": rel.version,
+                           "snapshots": rel.snapshot_versions()}}
+    with open(os.path.join(args.out, "metrics.json"), "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
 
     valid = [r for r in rows if r.get("f1_system") is not None]
     n_acc = sum(1 for r in rows if r["decision"] == "accept")
@@ -898,6 +928,8 @@ def main():
           f"违规 {ps['violations']}")
     if errors:
         print(f"异常    {len(errors)} 条（已降级，详见 metrics.json.errors）")
+    if warnings_list:
+        print(f"警告    {len(warnings_list)} 条（不影响结果，详见 metrics.json.warnings）")
     if recorder is not None:
         used = ledger.used
         recorder.finish({
@@ -928,7 +960,10 @@ def main():
     if calib is not None and calib.ready:
         print(f"阈值    {calib.explain()}")
 
-    print(f"产出    {args.out}/metrics.json  decisions.jsonl  curve.png  run.jsonl")
+    # 只列真正存在的文件：缺 matplotlib 时不会有 curve.png，别写进清单
+    produced = [f for f in ("metrics.json", "decisions.jsonl", "curve.png", "run.jsonl")
+                if os.path.exists(os.path.join(args.out, f))]
+    print(f"产出    {args.out}/" + "  ".join(produced))
     if n_act < 3:
         print("[!] 有效动作不足 3 次，门槛③可能过不了——加大漂移强度或调低阈值")
 

@@ -35,6 +35,65 @@ python scripts/run_pipeline.py     # 静态基线 vs 自进化闭环
 | `decisions.jsonl` | 每一次决策的完整记录（**门槛③的证据**） |
 | `curve.png` | 静态基线 vs 我们，两条线 |
 
+## 数据准备：clone 之后先补 data/gas
+
+仓库 `.gitignore` 排除了 `data/`，所以 `git clone` 后**没有气体数据**：
+跑 Gas 实验会直接报错，测试里 29 个依赖数据的用例会被 skip（这是设计如此，不是坏了）。
+
+### 1) 获取并生成 data/gas
+
+```bash
+# 1. 下载 UCI Gas Sensor Array Drift（dataset 224）
+#    https://archive.ics.uci.edu/dataset/224/gas
+#    解压后把 batch1.dat … batch10.dat 放到 data/gas/raw/Dataset/
+# 2. 转成批次 npz
+python scripts/prepare_gas.py
+# 产物：data/gas/processed/batch_01..10.npz
+#       13,910 样本 / 128 特征 / 6 类 / 10 批
+```
+
+校验文件 `checksums.sha256` **不随仓库提交**：它描述的是 `data/gas/processed/*.npz`，
+而 `data/gas/` 本身不进仓库。拿到数据后自己生成：
+
+```bash
+python scripts/gen_checksums.py --write     # 生成
+python scripts/gen_checksums.py --verify    # 复核
+```
+
+> 仓库里**不放**指向不存在文件的伪校验和——那会让 `--verify` 直接失败，
+> 比没有校验文件更误导。
+
+### 2) 跑合成数据（不需要任何数据文件）
+
+```bash
+python scripts/run_pipeline.py --dataset synthetic --out out_demo
+```
+
+### 3) 跑 Gas 数据
+
+```bash
+# 用标定结论里的默认配置（active_thresholds = 1.2 / 2.5）
+python scripts/run_pipeline.py --dataset gas --psi-low 1.2 --psi-mid 2.5 --llm none
+```
+
+> 不传 `--psi-low/--psi-mid` 时会用 `evolver/config.py` 里的**内置默认值**，
+> 与标定结论不是同一组，跑出来的数会不一样。要看结论就显式传参。
+
+### 4) 查看标定证据
+
+`docs/evidence/calibration/`：
+
+| 文件 | 内容 |
+|---|---|
+| `calibration_report.json` | 结构化：网格候选、分段指标、留一敏感性、限制 |
+| `calibration_report.md` | 同一份报告的可读版 |
+| `thresholds.json` | 配置快照：默认 1.2/2.5、候选 0.6/4.0、回退原因 |
+| `README.md` | 来源声明与使用边界 |
+
+**结论：默认仍是 1.2/2.5；0.6/4.0 只是实验候选**（优势只来自单个批次 b02）。
+数据是 **Gas 公开替代数据**，b10 是 `public_holdout` 而非官方测试集，
+**没有任何官方测试成绩**。
+
 ## 环境
 
 用 Anaconda 的 Python（已自带 sklearn / matplotlib）：
@@ -46,8 +105,24 @@ D:\anaconda\python.exe -V     # 3.13.9
 换机器时装依赖：
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt      # 或 pip install -r requirements.lock（版本锁定）
 ```
+
+### 依赖分级：哪些必需、哪些可选
+
+| 依赖 | 闭环必需？ | 缺了会怎样 |
+|---|---|---|
+| numpy / scipy / scikit-learn / joblib | ✅ 必需 | 直接跑不起来 |
+| pandas | ✅ 必需（`prepare_*` 转换脚本用） | 转换脚本不可用 |
+| **matplotlib** | ❌ **只用于画 `curve.png`** | **自动跳过绘图 + 警告**，闭环照常跑完；`metrics.json` 里记一条 `warnings`，**不进 `errors`** |
+
+`curve.png` 是**可选的展示产物**，不是评测必需。缺 matplotlib 时控制台会打印：
+
+```
+[--] 跳过绘图：未安装 matplotlib（结果不受影响，不会生成 curve.png）
+```
+
+`requirements.lock` 仍锁定 matplotlib（有网时装上更完整），但**不装也能跑完闭环**。
 
 ## 目录
 

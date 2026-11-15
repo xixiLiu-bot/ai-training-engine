@@ -95,17 +95,28 @@ def main():
             files = sorted(glob.glob(os.path.join(cdir, b, "*.csv")),
                            key=lambda p: int(os.path.splitext(os.path.basename(p))[0]))
             if len(files) < args.stages * 2:
-                print(f"  跳过 {cond}/{b}：只有 {len(files)} 个采样，太少")
+                print(f"  跳过 {cond}/{b}：只有 {len(files)} 个采样，太少"
+                      f"（至少要 {args.stages * 2} 个）")
                 continue
 
-            import pandas as pd
-            feats = []
-            for f in files:
-                df = pd.read_csv(f)
-                arr = df.to_numpy(dtype=np.float64)
-                feats.append(np.concatenate([time_features(arr[:, 0]),
-                                             time_features(arr[:, 1])]))
-            X = np.vstack(feats)
+            # 【修复】单个轴承读取失败不应中断整批，但必须逐条报出来，
+            # 而不是让异常冒到顶层或悄悄跳过。
+            try:
+                import pandas as pd
+                feats = []
+                for f in files:
+                    df = pd.read_csv(f)
+                    arr = df.to_numpy(dtype=np.float64)
+                    if arr.ndim != 2 or arr.shape[1] < 2:
+                        raise ValueError(f"{os.path.basename(f)} 不是两列数值"
+                                         f"（实际形状 {arr.shape}）")
+                    feats.append(np.concatenate([time_features(arr[:, 0]),
+                                                 time_features(arr[:, 1])]))
+                X = np.vstack(feats)
+            except Exception as exc:              # noqa: BLE001
+                print(f"  跳过 {cond}/{b}：读取失败 "
+                      f"（{type(exc).__name__}: {str(exc)[:80]}）")
+                continue
 
             # 标签：按寿命三等分（相对位置，不按绝对时间）
             n = len(X)
@@ -121,6 +132,20 @@ def main():
             total_files += n
             print(f"  batch_{batch:02d}  {cond:<12} {b:<12} {n:>5} 条  "
                   f"类别 {np.bincount(y, minlength=args.stages).tolist()}")
+
+    # 【修复】一个批次都没产出 = 输入不可用，必须非零退出，不能生成"空的成功产物"
+    if not index:
+        print("\n[!] 没有产出任何批次：输入目录里没有可用的 CSV。")
+        print(f"    查找路径：{args.src}")
+        print(f"    期望子目录：{', '.join(conds)}/<BearingX_Y>/*.csv（两列数值）")
+        # 清掉可能已创建的空输出目录，避免留下"看起来成功"的痕迹
+        try:
+            if os.path.isdir(args.out) and not os.listdir(args.out):
+                os.rmdir(args.out)
+                print(f"    已清理空输出目录：{args.out}")
+        except OSError:
+            pass
+        raise SystemExit(2)
 
     with open(os.path.join(args.out, "index.txt"), "w", encoding="utf-8") as f:
         for r in index:

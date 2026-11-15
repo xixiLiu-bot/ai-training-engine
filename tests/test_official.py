@@ -33,6 +33,13 @@ _spec = importlib.util.spec_from_file_location(
 vo = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(vo)
 
+# 气体批次是否就位。仓库 .gitignore 排除了 data/，所以"干净 clone"里没有这些 npz；
+# 依赖数据的测试必须显式 skip，而不是让 GasSource 抛 DataSourceError 变成 error。
+_GAS_DIRS = [os.path.join(REPO, "data", "gas", "processed"),
+             os.path.join(REPO, "data", "gas")]
+HAS_GAS = any(os.path.isdir(d) and any(f.endswith(".npz") for f in os.listdir(d))
+              for d in _GAS_DIRS)
+
 
 def _tmp(name: str) -> str:
     import uuid
@@ -86,12 +93,15 @@ class TestIdentities(unittest.TestCase):
 
 
 class TestSourceIdentity(unittest.TestCase):
+    @unittest.skipUnless(HAS_GAS, "需要 data/gas")
     def test_Gas声明为公开替代数据(self):
+        # 类属性不依赖数据，先断言；再校验需要 load() 的 metadata
         self.assertEqual(GasSource.data_identity, ids.PUBLIC_SUBSTITUTE)
         m = GasSource().get_metadata()
         self.assertEqual(m["data_identity"], ids.PUBLIC_SUBSTITUTE)
         self.assertFalse(m["is_official"])
 
+    @unittest.skipUnless(HAS_GAS, "需要 data/gas")
     def test_桥接层透传身份(self):
         from evolver.adapters.bridge import BridgeAdapter
         b = BridgeAdapter(GasSource(), batch_ids=[1, 2, 3])

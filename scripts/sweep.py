@@ -52,6 +52,7 @@ def run_one(args_list: list[str], out: str) -> dict | None:
     sysf = float(np.mean([r["f1_system"] for r in rows]))
     return {"base": base, "system": sysf, "gain": sysf - base,
             "cost": float(used.get("gpu_sec", 0.0)),
+            "model": d.get("model"),
             "per_batch": [float(r["f1_system"]) for r in rows],
             "n_batches": len(rows)}
 
@@ -67,6 +68,99 @@ def bootstrap_ci(values: list[float], n_boot: int = 4000,
                       for _ in range(n_boot)])
     lo, hi = np.quantile(means, [alpha / 2, 1 - alpha / 2])
     return float(lo), float(hi)
+
+
+# 给定数据与 random_state 下，这些模型的结果完全确定：
+# 换 seed 不会改变模型本身，因此"seed 方差 = 0"是**算法性质**，不是"结论稳健"的证据。
+DETERMINISTIC_MODELS = frozenset({
+    "logreg",       # lbfgs，确定性
+    "gnb",          # 闭式解
+    "ridge",        # 闭式解
+})
+
+# 成本的标准差 / 均值 超过这个比例，就认为"单位成本增益"不稳定
+COST_CV_WARN = 0.20
+# 系统分数随 seed 的标准差超过这个值，就认为结论对随机性敏感
+SEED_STD_WARN = 0.03
+
+
+def variance_report(*, model_kind: str, n_seeds: int, system: list[float],
+                    gain: list[float], cost: list[float],
+                    ci: tuple[float, float], pooled_n: int) -> dict:
+    """把不确定性拆成三类，分别给结论。
+
+    ① 模型方差（换 seed）：只有随机模型才有
+    ② 批次不确定性（bootstrap）：衡量"换一批数据分数会不会变"
+    ③ 运行成本方差：即使分数稳定，成本可能不稳，但它直接决定客观分
+
+    绝不因为"std == 0"就说"结论稳健"——确定性模型的 std 天然为 0。
+    """
+    def _sd(xs):
+        return float(statistics.stdev(xs)) if len(xs) > 1 else 0.0
+
+    sys_sd = _sd(system)
+    gain_sd = _sd(gain)
+    cost_sd = _sd(cost)
+    cost_mean = float(statistics.mean(cost)) if cost else 0.0
+    cost_cv = (cost_sd / cost_mean) if cost_mean > 1e-9 else 0.0
+
+    deterministic = model_kind in DETERMINISTIC_MODELS
+    seed_varies = (not deterministic) and sys_sd > 1e-9
+    cost_unstable = cost_cv > COST_CV_WARN
+
+    lines = ["", "  不确定性拆成三类（不要只看一个 std）："]
+    # ①
+    if deterministic:
+        lines.append(f"  ① 模型方差（seed）：**不适用** —— {model_kind} 是确定性算法，"
+                     f"换 seed 不会改变模型。std={sys_sd:.4f} 不代表结论稳健。")
+    elif seed_varies:
+        tag = "  [!] 超过 %.2f，结论对随机性敏感，引用时必须带区间" % SEED_STD_WARN \
+            if sys_sd > SEED_STD_WARN else ""
+        lines.append(f"  ① 模型方差（seed）：系统 std={sys_sd:.4f}，"
+                     f"增益 std={gain_sd:.4f}{tag}")
+    else:
+        lines.append(f"  ① 模型方差（seed）：系统 std={sys_sd:.4f}，"
+                     f"{model_kind} 虽非确定性算法，但在这份数据上 seed 未造成差异")
+    # ②
+    lines.append(f"  ② 批次不确定性（bootstrap，{pooled_n} 个批次样本）："
+                 f"系统分数 95% CI [{ci[0]:.4f}, {ci[1]:.4f}]")
+    # ③
+    if cost_unstable:
+        lines.append(f"  ③ 运行成本方差：{cost_mean:.4f}s ± {cost_sd:.4f}s"
+                     f"（CV={cost_cv:.0%}）—— **成本不稳定，单位成本增益不可靠**")
+    else:
+        lines.append(f"  ③ 运行成本方差：{cost_mean:.4f}s ± {cost_sd:.4f}s"
+                     f"（CV={cost_cv:.0%}），成本波动在可接受范围")
+
+    # 结论：三类合起来说，而不是单看 std
+    if deterministic and cost_unstable:
+        verdict = ("  结论：分数可复现（确定性模型），但**成本**波动大，"
+                   "单位成本增益只能给区间，不能给单一数字。")
+    elif deterministic:
+        verdict = ("  结论：该模型结果可复现；剩余不确定性主要来自批次抽样，"
+                   "见 ② 的置信区间。")
+    elif seed_varies and cost_unstable:
+        verdict = "  结论：分数与成本都对随机性敏感，两个都要带区间引用。"
+    elif seed_varies:
+        verdict = "  结论：分数随 seed 波动，引用时必须带上 ② 与 ① 的区间。"
+    else:
+        verdict = "  结论：seed 未造成差异，不确定性主要来自批次抽样（②）。"
+    lines.append(verdict)
+
+    return {
+        "model_kind": model_kind,
+        "deterministic_model": deterministic,
+        "seed_varies_model": seed_varies,
+        "system_std": sys_sd,
+        "gain_std": gain_sd,
+        "cost_std": cost_sd,
+        "cost_cv": cost_cv,
+        "cost_unstable": cost_unstable,
+        "n_seeds": n_seeds,
+        "ci": ci,
+        "pooled_n": pooled_n,
+        "lines": lines,
+    }
 
 
 def main():
@@ -114,6 +208,8 @@ def main():
     sysf = [r["system"] for _, r in results]
     gain = [r["gain"] for _, r in results]
     cost = [r["cost"] for _, r in results]
+    # 实际用的模型名（args.model 为空时由 run_pipeline 决定，取第一次运行的结果）
+    model_kind = results[0][1].get("model") or args.model or "unknown"
 
     def stat(xs):
         if len(xs) == 1:
@@ -140,11 +236,30 @@ def main():
         print(f"  单位成本增益：{m_gain / m_cost:.4f}"
               f"（增益 {m_gain:.4f} ÷ 成本 {m_cost:.4f}s）")
 
+    # 【修复】把三类不确定性分开报告，并写进 JSON，避免下游只看到一个 std 就下结论
+    extra = {}
+    if args.seeds > 1:
+        rep = variance_report(model_kind=model_kind, n_seeds=len(results),
+                              system=sysf, gain=gain, cost=cost,
+                              ci=(lo, hi), pooled_n=len(pooled))
+        for line in rep["lines"]:
+            print(line)
+        extra = {
+            "model_kind": rep["model_kind"],
+            "deterministic_model": rep["deterministic_model"],
+            "seed_varies_model": rep["seed_varies_model"],
+            "system_std_seed": round(rep["system_std"], 6),
+            "cost_std_seed": round(rep["cost_std"], 6),
+            "cost_cv": round(rep["cost_cv"], 4),
+            "cost_unstable": rep["cost_unstable"],
+            "bootstrap_n": rep["pooled_n"],
+        }
+
     os.makedirs(os.path.join(ROOT, args.out), exist_ok=True)
     out_json = os.path.join(ROOT, args.out, "sweep.json")
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump({
-            "dataset": args.dataset, "model": args.model, "llm": args.llm,
+            "dataset": args.dataset, "model": model_kind, "llm": args.llm,
             "seeds": [s for s, _ in results],
             "rows": [{"seed": s, **{k: v for k, v in r.items()
                                     if k != "per_batch"}}
@@ -155,15 +270,10 @@ def main():
                 "gain_mean": m_gain, "gain_std": sd_gain,
                 "cost_mean": m_cost, "cost_std": sd_cost,
                 "bootstrap_ci": [lo, hi],
+                **extra,
             },
         }, f, ensure_ascii=False, indent=2)
     print(f"\n  明细 → {os.path.relpath(out_json, ROOT)}")
-
-    if args.seeds > 1 and statistics.stdev(sysf) > 0.03:
-        print("\n  [!] 种子间差异 > 0.03：说明结论对随机性敏感，"
-              "引用数字时必须带上区间。")
-    else:
-        print("\n  种子间差异很小，这个数字比较稳。")
 
 
 if __name__ == "__main__":

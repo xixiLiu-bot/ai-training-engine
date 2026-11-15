@@ -5,11 +5,31 @@ __pycache__/
 .venv/
 venv/
 
-# ---- 数据与产物（不进仓库）----
-data/
-out/
-!data/.gitkeep
+# ---- 密钥与本地配置（绝对不能提交）----
+.env
+.env.local
+.env.*.local
+*.key
+
+# ---- 缓存与备份（不要进仓库）----
+*.orig
+*.rej
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 swanlog/
+
+# ---- 数据与产物（不进仓库）----
+# 只忽略「具体的数据目录」，不忽略整个 data/。
+# 这样 data/cmapss/README_DATA.md 与 data/xjtu_sy/README_DATA.md
+# 这两份「目录契约」可以正常提交，又不需要依赖 !negation 的语义。
+data/gas/
+data/synthetic/
+data/raw/
+data/official/
+data/rul/
+data/xjtu/
+out/
 
 # ---- 临时 ----
 _extract/
@@ -42,3 +62,16 @@ registration_dump.txt
 
 # ---- 对比实验产物 ----
 out*/
+
+# ---- 原始数据（体积极大，绝不进仓库）----
+data/CMAPSSData/
+data/Dataset (1)/
+data/bearing/
+data/cal_robust/
+data/checkpoints/
+
+# ---- 队友的发布包与验证日志（本地检查用，不进仓库）----
+human-ai-training-engine-rc0*/
+rc1-final-verify-logs*/
+*.zip
+data/XJTU-SY_Bearing_Datasets/

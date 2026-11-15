@@ -1,4 +1,4 @@
-# 智训引擎 · 评测镜像
+﻿# 智训引擎 · 评测镜像
 #
 # 目标：一条命令跑完闭环，全程无网络、无 GPU、无交互。
 #
@@ -15,7 +15,7 @@
 #   - 基础镜像选 slim，最终体积约 400~600MB，远低于 2GB 上限
 #   - 不打包任何模型权重；驱动模型走远端推理服务（QWEN_BASE_URL）
 #   - 依赖版本在 requirements.lock 里固定，保证可复现
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -27,7 +27,7 @@ WORKDIR /app
 
 # 只装锁定的运行时依赖；不装开发依赖（pytest / swanlab 等）
 COPY requirements.lock /app/requirements.lock
-RUN pip install --no-cache-dir --disable-pip-version-check -r /app/requirements.lock
+RUN pip install --no-cache-dir --disable-pip-version-check -i https://pypi.tuna.tsinghua.edu.cn/simple -r /app/requirements.lock
 
 # 代码
 COPY evolver /app/evolver

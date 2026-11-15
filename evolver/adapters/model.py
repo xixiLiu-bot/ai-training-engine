@@ -264,6 +264,11 @@ class SklearnModelAdapter:
         self.auto_calibrate = bool(auto_calibrate)
         # 【整改 B3】输出校准参数。None = 未校准；结构见 calibrate_output()
         self.calib: dict | None = None
+        # 【修复】最近一次训练/续训的降级说明。None = 未发生降级。
+        # 结构：{"degraded": bool, "reason": str, "classes_before": [...],
+        #        "classes_after": [...], "action": "cold_start"|"warm_start"}
+        # 为什么要有它：续训在"类别集合变化"时必须降级，降级不能是静默的。
+        self.fit_note: dict | None = None
 
     def _masked(self, X):
         X = np.asarray(X, dtype=float)
@@ -343,11 +348,40 @@ class SklearnModelAdapter:
 
         关键：必须同时刷新标准化。权重是配着旧尺度训出来的，换了数据不换尺子，
         优化器要在错误空间里重新爬，反而更慢更差。
+
+        【修复】类别集合变化时不再崩溃：
+            新批次的类别集合与现役模型不同（气体数据真实存在：b01 有 6 类、
+            b03 只有 5 类），sklearn 的 warm_start 会复用旧形状的系数，
+            直接抛 `Initialization coef is of shape (6,129), expected (5,129)`。
+            现在的做法是**明确降级为冷启动**，并把原因写进 `self.fit_note`，
+            由调用方（run_pipeline）落进 decisions.jsonl，禁止静默降级。
         """
         X = np.asarray(X, dtype=float)
         y = np.asarray(y).ravel()
+        self.fit_note = None
+
         if not self.is_fitted() or not hasattr(self.est, "warm_start"):
-            return self.fit(X, y, sample_weight)
+            self.fit(X, y, sample_weight)
+            self.fit_note = {"degraded": False, "reason": "cold_start:not_warm_startable",
+                             "action": "cold_start"}
+            return self
+
+        # 【修复】类别集合一致性检查：不一致就不能续训
+        old_classes = getattr(self.est, "classes_", None)
+        new_classes = np.unique(y)
+        if old_classes is not None:
+            old_sorted = np.sort(np.asarray(old_classes).ravel())
+            if not np.array_equal(old_sorted, new_classes):
+                self.fit(X, y, sample_weight)          # 安全冷启动：权重与尺子全部重建
+                self.fit_note = {
+                    "degraded": True,
+                    "reason": "class_set_changed",
+                    "classes_before": [float(c) for c in old_sorted],
+                    "classes_after": [float(c) for c in new_classes],
+                    "action": "cold_start",
+                }
+                return self
+
         if self.feature_mask is None and self.feature_select not in ("none", "", None):
             self.feature_mask = _feature_mask(
                 X, y, model_task(self.kind), self.feature_select, self.feature_k)
@@ -362,9 +396,18 @@ class SklearnModelAdapter:
                 self.est.fit(Xs, y, sample_weight=sample_weight)
             else:
                 self.est.fit(Xs, y)
-        except Exception:                 # noqa: BLE001  不支持 sample_weight 就退回
-            self.est.fit(Xs, y)
+        except Exception as exc:          # noqa: BLE001
+            # 其他原因导致的续训失败：同样降级为冷启动，并留痕（不再重试同一调用）
+            self.fit(X, y, sample_weight)
+            self.fit_note = {
+                "degraded": True,
+                "reason": f"warm_start_failed:{type(exc).__name__}",
+                "detail": str(exc)[:200],
+                "action": "cold_start",
+            }
+            return self
         self.calib = None
+        self.fit_note = {"degraded": False, "reason": "warm_start", "action": "warm_start"}
         return self
 
     def can_incremental(self) -> bool:
