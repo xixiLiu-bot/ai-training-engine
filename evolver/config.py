@@ -54,6 +54,7 @@ class Config:
     logreg_c: float = 1.0    # 逻辑回归的正则强度倒数（越小越强）
     scaler_kind: str = "standard"   # standard | quantile（百分位归一）
     incremental_epochs: int = 3      # 增量更新喂几轮（多了会灾难性遗忘）
+    hpo_candidates: int = 1          # 重训时比几组超参数（1=不做 HPO，旧行为）
     # 【改进 4】特征筛选：none | var | fclass；feature_k = 保留比例
     feature_select: str = "none"
     feature_k: float = 0.6

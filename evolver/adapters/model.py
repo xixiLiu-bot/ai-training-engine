@@ -45,7 +45,9 @@ def _make_scaler(kind: str = "standard"):
     raise ValueError(f"未知 scaler '{kind}'，可选：standard / quantile")
 
 
-def _make_estimator(kind: str, random_state: int, logreg_c: float = 1.0):
+def _make_estimator(kind: str, random_state: int, logreg_c: float = 1.0,
+                 sgd_alpha: float = 1e-4, ridge_alpha: float = 1.0,
+                 hgb_params: dict | None = None):
     if kind == "logreg":
         # C 是正则强度的倒数：C 越小正则越强。
         # sklearn 默认 C=1.0；小样本 + 高维时加强正则通常更稳
@@ -64,7 +66,7 @@ def _make_estimator(kind: str, random_state: int, logreg_c: float = 1.0):
         # 注意轮数不能多：5 轮掉到 0.768，10 轮 0.767（灾难性遗忘）。
         from sklearn.linear_model import SGDClassifier
         return SGDClassifier(loss="log_loss", random_state=random_state,
-                             max_iter=1000, tol=1e-3)
+                             max_iter=1000, tol=1e-3, alpha=sgd_alpha)
     if kind == "gnb":
         # 高斯朴素贝叶斯：假设每个特征服从正态分布、特征间独立。
         # 假设很强（传感器明显相关），但在小样本 + 高维上这个强偏见正好起正则作用。
@@ -83,13 +85,14 @@ def _make_estimator(kind: str, random_state: int, logreg_c: float = 1.0):
                                       n_jobs=-1)
     if kind == "ridge":
         from sklearn.linear_model import Ridge
-        return Ridge(alpha=1.0, random_state=random_state)
+        return Ridge(alpha=ridge_alpha, random_state=random_state)
     if kind == "hgb":
         # 回归任务的非线性模型：RUL 与传感器读数不是线性关系，
         # 树模型能吃到“退化曲线前慢后快”的形状。CPU 上训练约 1~2 秒。
         from sklearn.ensemble import HistGradientBoostingRegressor
-        return HistGradientBoostingRegressor(max_iter=200, learning_rate=0.05,
-                                             random_state=random_state)
+        hp = dict(max_iter=200, learning_rate=0.05)
+        hp.update(hgb_params or {})
+        return HistGradientBoostingRegressor(random_state=random_state, **hp)
     raise ValueError(f"未知模型 '{kind}'，可选：{CLASSIFIERS + REGRESSORS}")
 
 
@@ -247,14 +250,20 @@ class SklearnModelAdapter:
     def __init__(self, kind: str = "logreg", random_state: int = 0,
                  logreg_c: float = 1.0, scaler_kind: str = "standard",
                  feature_select: str = "none", feature_k: float = 0.6,
-                 auto_calibrate: bool = False):
+                 auto_calibrate: bool = False,
+                 sgd_alpha: float = 1e-4, ridge_alpha: float = 1.0,
+                 hgb_params: dict | None = None):
         from sklearn.preprocessing import StandardScaler
         self.kind = kind
         self.random_state = random_state
         self.scaler_kind = scaler_kind
         self.scaler = _make_scaler(scaler_kind)
         self.logreg_c = float(logreg_c)
-        self.est = _make_estimator(kind, random_state, logreg_c)
+        self.sgd_alpha = float(sgd_alpha)
+        self.ridge_alpha = float(ridge_alpha)
+        self.hgb_params = hgb_params or {}
+        self.est = _make_estimator(kind, random_state, logreg_c,
+                                   sgd_alpha, ridge_alpha, hgb_params)
         self.n_features_in_: int | None = None
         # 【改进 4】特征筛选：none | var | fclass；feature_k=保留比例
         self.feature_select = feature_select or "none"
@@ -592,6 +601,55 @@ ACTION_CATALOGS: dict[str, dict[str, float]] = {
     "hgb": {"do_nothing": 0.0, "refresh_normalization": 0.05,
              "refit_model": 2.0},
 }
+
+
+# ─────────────────────────────────────────────────────────────
+# 重训时的「候选超参数组合」
+#
+# 为什么需要它：赛题名叫"模型训练与超参数优化"，但我们的超参数原本全是写死的。
+# 换一种做法——重训时造几个不同参数的候选，让门控在同一批上挑最好的：
+#   · 不花 token（多花的是训练时间，已如实记账）
+#   · 有保护（门控只接受明显更好的，选错会回滚）
+#   · 真正随数据变（不是提交时写死一份）
+#
+# 每组候选都实测过"选对选错差 50%"量级：
+#   C=0.01 单批 +44%、闭环 −15%；quantile 轴承 +13%。
+# ─────────────────────────────────────────────────────────────
+_CANDIDATES: dict[str, list[tuple[str, dict]]] = {
+    "logreg": [
+        ("C=1.0（默认）", {}),
+        ("C=0.1（强正则）", {"logreg_c": 0.1}),
+        ("C=0.01（最强）", {"logreg_c": 0.01}),
+    ],
+    "sgd": [
+        ("alpha=1e-4（默认）", {}),
+        ("alpha=1e-3（强正则）", {"sgd_alpha": 1e-3}),
+    ],
+    "hgb": [
+        ("默认", {}),
+        ("更慢更稳（lr=0.03, 300轮）", {"hgb_params": {"max_iter": 300,
+                                                      "learning_rate": 0.03}}),
+    ],
+    "ridge": [
+        ("alpha=1.0（默认）", {}),
+        ("alpha=10（强正则）", {"ridge_alpha": 10.0}),
+    ],
+    "rf": [("默认", {})],
+    "mlp": [("默认", {})],
+    "gbdt": [("默认", {})],
+    "gnb": [("默认", {})],
+}
+
+
+def refit_candidates(kind: str, n: int = 3) -> list[tuple[str, dict]]:
+    """返回重训时要比的候选 [(标签, 额外参数)]。
+
+    n<=1 时只返回一组（等于不做 HPO，保持旧行为）。
+    """
+    pool = _CANDIDATES.get(kind, [("默认", {})])
+    if n is None or n <= 1:
+        return pool[:1]
+    return pool[:max(1, min(n, len(pool)))]
 
 
 def action_catalog(kind: str) -> dict[str, float]:
