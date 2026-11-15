@@ -109,7 +109,10 @@ class ReleaseManager:
                  margin_mode: str = "absolute",
                  metric_name: str = "score",
                  metric_direction: str = "higher",
-                 eps: float = 1e-9):
+                 eps: float = 1e-9,
+                 gate_alpha: float = 0.05,
+                 require_significance: bool = True,
+                 n_boot_test: int = 300):
         if margin_mode not in ("absolute", "relative"):
             raise ValueError(f"未知 margin_mode '{margin_mode}'")
         self.current = model
@@ -122,6 +125,12 @@ class ReleaseManager:
         self.metric_name = metric_name
         self.metric_direction = metric_direction
         self.eps = float(eps)
+        # 显著性检验：Dietterich 1998 指出小测试集上的原始差值不可靠。
+        # alpha=0.05；门控窗口 >1 时用窗口均值，不走单批检验。
+        self.gate_alpha = float(gate_alpha)
+        self.require_significance = bool(require_significance)
+        self.last_test: dict | None = None
+        self.n_boot_test = max(50, int(n_boot_test))
         # 相对模式下实际生效的模式（baseline 接近 0 时会退回 absolute）
         self.last_mode_used = margin_mode
 
@@ -158,7 +167,8 @@ class ReleaseManager:
         self.last_mode_used = "absolute"
         return raw_gain, ""
 
-    def gate(self, candidate_score: float, reference_score: float) -> tuple[bool, str]:
+    def gate(self, candidate_score: float, reference_score: float,
+             paired: tuple | None = None) -> tuple[bool, str]:
         """记一笔增益，并按"归一化增益 + 窗口"判据决定是否放行。
 
         参数都是 **utility**（越大越好）。
@@ -176,6 +186,25 @@ class ReleaseManager:
         tail = f"（{note}）" if note else ""
 
         if self.gate_window == 1 or len(self.gain_window) < self.gate_window:
+            # 单批路径：增益要够（经济意义），并且（若给了配对预测）差异要显著。
+            # 没有 paired 时退回旧行为（回归任务没有"对错"，McNemar 不适用）。
+            if paired is not None and self.require_significance:
+                # 检验的统计量必须与判据同源：判据是 macro-F1，就用 macro-F1 的自助检验。
+                # （McNemar 检验的是逐样本对错≈准确率，类别不均衡时会与 macro-F1 背离：
+                #   实测一例 F1 差 0.33 而 McNemar p=0.70 —— 会系统性误拒。）
+                from .stats import paired_bootstrap_test
+                test = paired_bootstrap_test(*paired, n_boot=self.n_boot_test,
+                                             seed=self.seed)
+                passed = (norm_gain >= self.margin
+                          and test["p_value"] < self.gate_alpha)
+                verdict = "放行" if passed else "拒绝上线"
+                why = (f"同批对比：候选 {self._to_raw(candidate_score):.4f} vs 当前 "
+                       f"{self._to_raw(reference_score):.4f}，"
+                       f"归一化增益 {gain_txt}（门控 {margin_txt}）；"
+                       f"{test['note']}（alpha={self.gate_alpha}）→ {verdict}"
+                       f"（{self.metric_name}/{self.last_mode_used}）{tail}")
+                self.last_test = test
+                return passed, why
             if norm_gain >= self.margin:
                 return True, (f"同批对比：候选 {self._to_raw(candidate_score):.4f} vs 当前 "
                               f"{self._to_raw(reference_score):.4f}，"
@@ -200,13 +229,15 @@ class ReleaseManager:
         return (stat >= self.margin), detail
 
     def try_release(self, candidate, candidate_score: float,
-                    reference_score: float) -> dict:
+                    reference_score: float,
+                    paired: tuple | None = None) -> dict:
         """候选过门控则上线并快照，否则维持现役（= 自动回滚）。
 
         【R1】返回的记录里带上完整门控证据，供 decisions.jsonl / run.jsonl 留痕。
         """
         raw_gain = float(candidate_score) - float(reference_score)
-        ok, why = self.gate(candidate_score, reference_score)
+        self.last_test = None
+        ok, why = self.gate(candidate_score, reference_score, paired)
         norm_gain, _note = self._normalize(raw_gain, reference_score)
 
         if ok:
@@ -237,6 +268,8 @@ class ReleaseManager:
             "margin": self.margin,
             "margin_mode": self.margin_mode,
             "margin_mode_used": self.last_mode_used,
+            # 显著性检验证据（回归任务为 None）
+            "mcnemar": self.last_test,
         }
         self.history.append(rec)
         return rec

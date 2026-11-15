@@ -487,7 +487,9 @@ def main():
                                margin_mode=margin_mode,
                                metric_name=metric.name,
                                metric_direction=getattr(metric, "direction", "higher"),
-                               eps=cfg.margin_relative_floor)
+                               eps=cfg.margin_relative_floor,
+                               gate_alpha=cfg.gate_alpha,
+                               require_significance=cfg.gate_require_significance)
 
         ref_score = metric.score(first.y, rel.current.predict(first.X))
         rel.current_score = ref_score
@@ -739,7 +741,18 @@ def main():
 
                 if cand is not None:
                     shadow = ev.shadow(rel.current, cand, batch, metric)
-                    rel_rec = rel.try_release(cand, shadow["after"], shadow["before"])
+                    # 分类任务传配对预测，让门控做 McNemar 检验（Dietterich 1998）；
+                    # 回归任务没有"对错"的概念，传 None 退回纯 margin 判据。
+                    _paired = None
+                    if task_type == "classification":
+                        try:
+                            _paired = (batch.y,
+                                       cand.predict(batch.X),
+                                       rel.current.predict(batch.X))
+                        except Exception:              # noqa: BLE001
+                            _paired = None
+                    rel_rec = rel.try_release(cand, shadow["after"], shadow["before"],
+                                              paired=_paired)
                     gain = shadow["gain"]
                 else:
                     rel_rec = {"decision": "noop", "reason": dec["reason"]}
@@ -796,7 +809,7 @@ def main():
                         "metric_name", "metric_direction", "baseline_score",
                         "candidate_score", "raw_gain", "normalized_gain",
                         "margin", "margin_mode", "margin_mode_used",
-                        "release_decision")},
+                        "release_decision", "reason", "mcnemar")},
                     # 本批实际计费（供按区间拆成本，例：标定/验证分段统计）
                     "charge": {"gpu_sec": round(chg_gpu, 4),
                                "labels": int(chg_labels),
