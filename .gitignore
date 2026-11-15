@@ -75,3 +75,6 @@ human-ai-training-engine-rc0*/
 rc1-final-verify-logs*/
 *.zip
 data/XJTU-SY_Bearing_Datasets/
+
+# ---- 与本项目无关的本地材料 ----
+*提示词手册*
