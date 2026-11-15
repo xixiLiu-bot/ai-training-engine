@@ -30,7 +30,7 @@ from .client import (
     AuthError,CapabilityError, ChatClient, LLMError, ServerError,
                      TransportError)
 from .parsing import parse_decision
-from .prompts import build_messages, repair_messages
+from .prompts import build_messages, repair_messages, build_messages_rich, prompt_variant
 
 # 解码策略，从「最可信」到「最兜底」。
 # 顺序是**按实测效果排的**，不是按理论优雅度：
@@ -153,7 +153,9 @@ class Qwen4BDecider:
 
         t0 = time.monotonic()
         start_tokens = self.tokens_used
-        base_messages = build_messages(state, diagnosis, rule_action)
+        base_messages = (build_messages_rich(state, diagnosis, rule_action, catalog)
+                    if prompt_variant() == "rich"
+                    else build_messages(state, diagnosis, rule_action))
 
         messages = base_messages
         repairs = 0

@@ -120,6 +120,12 @@ def reason_for(action: str, diagnosis: dict | None = None) -> str:
     return f"4B {base}：归因={kind}"
 
 
-def catalog_text() -> str:
-    """给模型看的动作清单，一行一个，越短越好。"""
-    return " | ".join(f"{a}({COST[a]}s)" for a in (DO_NOTHING, REFRESH, REFIT))
+def catalog_text(cost: dict | None = None) -> str:
+    """给模型看的动作清单。
+
+    cost 传入时用真实成本（每个模型不同：logreg 重训 0.5s、gbdt 2.2s），
+    不传则退回本模块写死的默认值（仅作兜底）。
+    """
+    table = cost or COST
+    return " | ".join(
+        f"{a}({table.get(a, COST[a])}s)" for a in (DO_NOTHING, REFRESH, REFIT))
