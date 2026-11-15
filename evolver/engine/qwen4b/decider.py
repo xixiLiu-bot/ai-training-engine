@@ -26,7 +26,8 @@ import re
 import time
 
 from .actions import (ACTIONS, DECISION_SCHEMA, GUIDED_CHOICE, REFIT, reason_for)
-from .client import (CapabilityError, ChatClient, LLMError, ServerError,
+from .client import (
+    AuthError,CapabilityError, ChatClient, LLMError, ServerError,
                      TransportError)
 from .parsing import parse_decision
 from .prompts import build_messages, repair_messages
@@ -193,6 +194,12 @@ class Qwen4BDecider:
                 self.strategy_i += 1
                 last_error = f"{strategy} 不被支持: {exc}"
                 continue
+            except AuthError as exc:
+                # 没 Key / Key 无效：换策略、换参数都救不回来，
+                # 直接熔断，别让后面每一批都白跑一次网络。
+                self._trip(f"鉴权失败，停止调用：{str(exc)[:80]}")
+                last_error = f"AuthError: {exc}"
+                break
             except (TransportError, ServerError) as exc:
                 # 网络断 / 服务端崩：换解码策略没有意义，立刻收手
                 last_error = f"{type(exc).__name__}: {exc}"

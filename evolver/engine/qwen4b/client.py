@@ -34,6 +34,14 @@ class CapabilityError(LLMError):
     """
 
 
+class AuthError(LLMError):
+    """401 / 403 —— 没 Key 或 Key 无效。
+
+    单独分出来是因为它**不该重试**：换解码策略、换参数都救不回一个坏 Key，
+    重试只会浪费配额，还会把"缺少 Key"伪装成"模型不稳定"。
+    """
+
+
 class ServerError(LLMError):
     """5xx —— 服务端崩了。"""
 
@@ -124,6 +132,9 @@ class ChatClient:
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.api_key}",
+                # 有些网关会直接重置默认 Python-urllib UA 的请求
+                "User-Agent": "zhixun-engine/0.1",
+                "Accept": "application/json",
             },
         )
 
@@ -137,6 +148,8 @@ class ChatClient:
                 detail = exc.read().decode("utf-8", "replace")[:300]
             except Exception:  # noqa: BLE001
                 pass
+            if exc.code in (401, 403):
+                raise AuthError(f"HTTP {exc.code}: {detail}") from exc
             if 400 <= exc.code < 500:
                 raise CapabilityError(f"HTTP {exc.code}: {detail}") from exc
             raise ServerError(f"HTTP {exc.code}: {detail}") from exc
@@ -146,6 +159,10 @@ class ChatClient:
             raise TransportError(f"URLError: {exc.reason}") from exc
         except (json.JSONDecodeError, ValueError) as exc:
             raise ServerError(f"响应不是合法 JSON: {exc}") from exc
+        except OSError as exc:
+            # ConnectionResetError / ConnectionAbortedError 等裸 OS 级错误。
+            # 原来没兜住，网络抖一下就会把整轮跑挂 —— 门槛①要求无人干预跑完。
+            raise TransportError(f"{type(exc).__name__}: {exc}") from exc
 
         latency = time.monotonic() - t0
         return self._parse(raw, latency, messages)
