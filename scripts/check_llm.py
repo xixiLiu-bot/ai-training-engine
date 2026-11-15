@@ -21,7 +21,11 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
+from evolver.envfile import load_env                     # noqa: E402
 from evolver.engine.qwen4b import compat as q4b          # noqa: E402
+
+# 和 run_pipeline 一致：启动时读根目录 .env（已 gitignore，不会提交）
+_ENV = load_env()
 from evolver.engine.qwen4b.client import (                 # noqa: E402
     AuthError, CapabilityError, LLMError, ServerError, TransportError,
 )
@@ -50,6 +54,10 @@ def main():
                     choices=["qwen4b", "pytrio", "ollama"])
     args = ap.parse_args()
 
+    if _ENV.get("applied"):
+        print(f"  已读取 .env：{len(_ENV['applied'])} 项（{_ENV.get('path', '')}）")
+    elif _ENV.get("missing"):
+        print("  提示：没找到 .env，仅使用当前环境变量")
     print(f"=== 大模型接入自检（backend = {args.backend}）===\n")
 
     # ── 一、配置 ──
