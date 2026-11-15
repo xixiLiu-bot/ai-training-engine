@@ -65,7 +65,8 @@ def main():
     print("一、配置")
     line("base_url", bool(base_url), base_url or "未设置")
     line("model", bool(model), model)
-    has_key = bool(api_key) and api_key != "EMPTY"
+    # ollama 不需要真 Key（本地服务），其余后端必须要
+    has_key = (bool(api_key) and api_key != "EMPTY") or args.backend == "ollama"
     line("QWEN_API_KEY", has_key,
          mask(api_key) if api_key else "未设置 ← 没它连不上")
     line("关闭思考模式", True, "enable_thinking=false（默认开启，PyTRiO 必须关）")
