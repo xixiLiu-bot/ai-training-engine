@@ -195,8 +195,14 @@ class ReleaseManager:
                 from .stats import paired_bootstrap_test
                 test = paired_bootstrap_test(*paired, n_boot=self.n_boot_test,
                                              seed=self.seed)
-                passed = (norm_gain >= self.margin
-                          and test["p_value"] < self.gate_alpha)
+                margin_ok = norm_gain >= self.margin
+                stats_ok = test["p_value"] < self.gate_alpha
+                passed = margin_ok and stats_ok
+                # 反事实留痕：只比大小时会怎么判。用于事后核对新门控
+                # 到底拦下了什么、放过了什么（不改变行为）。
+                test = {**test, "margin_ok": bool(margin_ok),
+                        "stats_ok": bool(stats_ok),
+                        "margin_only_would_accept": bool(margin_ok)}
                 verdict = "放行" if passed else "拒绝上线"
                 why = (f"同批对比：候选 {self._to_raw(candidate_score):.4f} vs 当前 "
                        f"{self._to_raw(reference_score):.4f}，"
