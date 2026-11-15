@@ -78,27 +78,30 @@ def repair_messages(messages: list[dict], bad_output: str) -> list[dict]:
 #      27B 不会，而且没有这条它会以为重训永远不该选
 # ─────────────────────────────────────────────────────────────
 RICH_SYSTEM = (
-    "你是工业模型运维助手。数据在漂移，模型在失准。\n"
-    "你从三个动作里选一个，只回答动作名。\n"
-    "原则：能用便宜手段解决，就不要用贵的。\n"
-    "特别注意：psi_ratio 高说明是整体老化，局部校准救不了；"
-    "psi_topk 远高于 psi_mean 说明只是少数传感器异常，先校准更划算。"
+    '你是工业模型运维助手。数据在漂移，模型在失准。\n'
+    '你从三个动作里选一个，只回答动作名。\n'
+    '原则：能用便宜手段解决，就不要用贵的。\n'
+    '判断依据是 psi_rel（当前 PSI 相对本数据集重型阈值的倍数，1.0 表示刚好到重型阈值）：\n'
+    '  psi_rel < 0.5 一般不动；0.5~1.0 先试校准；\n'
+    '  psi_rel >= 1 且上次校准已证明无效时，才重训。\n'
+    'psi_ratio 高说明是整体老化（局部校准救不了）；\n'
+    'psi_ratio 低但 psi_topk 高，说明只是少数传感器异常，先校准更划算。'
 )
 
 RICH_FEW_SHOT: list[dict] = [
-    # 别动：分布稳定
+    # 别动：远低于重型阈值
     {"role": "user", "content":
-        "psi_mean=0.030 psi_ratio=0.00 psi_topk=0.05 分数=0.951 最好=0.955 "
+        "psi_rel=0.02 psi_ratio=0.00 psi_topk=0.05 分数=0.951 最好=0.955 "
         "上次增益=+0.000 上次动作=无 归因=stable 成本=不动0s/校准0.05s/重训0.5s"},
     {"role": "assistant", "content": "do_nothing"},
-    # 校准：少数特征漂、整体幅度不大
+    # 校准：接近但在重型阈值以下，超标比例不高
     {"role": "user", "content":
-        "psi_mean=0.150 psi_ratio=0.12 psi_topk=0.31 分数=0.812 最好=0.951 "
+        "psi_rel=0.60 psi_ratio=0.12 psi_topk=0.31 分数=0.812 最好=0.951 "
         "上次增益=+0.000 上次动作=无 归因=covariate 成本=不动0s/校准0.05s/重训0.5s"},
     {"role": "assistant", "content": "refresh_normalization"},
-    # 重训：大面积超标 + 上次校准已证明无效
+    # 重训：超过重型阈值 + 大面积超标 + 上次校准已证明无效
     {"role": "user", "content":
-        "psi_mean=1.420 psi_ratio=0.63 psi_topk=2.80 分数=0.580 最好=0.951 "
+        "psi_rel=1.35 psi_ratio=0.63 psi_topk=2.80 分数=0.580 最好=0.951 "
         "上次增益=-0.004 上次动作=refresh_normalization 归因=covariate "
         "成本=不动0s/校准0.05s/重训0.5s"},
     {"role": "assistant", "content": "refit_model"},
@@ -123,8 +126,15 @@ def build_messages_rich(state: dict, diagnosis: dict, rule_action: str,
     else:
         cost_s = catalog_text()
 
+    psi_mean = float(state.get("psi_mean", 0.0))
+    psi_mid = float(state.get("psi_mid", 0.0) or 0.0)
+    if psi_mid > 0:
+        rel_s = f"{psi_mean / psi_mid:.2f}"
+    else:
+        rel_s = f"{psi_mean:.3f}"      # 还没标定出来时退回绝对值
+
     body = (
-        f"psi_mean={float(state.get('psi_mean', 0.0)):.3f} "
+        f"psi_rel={rel_s} psi_mean={psi_mean:.3f} psi_mid={psi_mid:.3f} "
         f"psi_ratio={ratio_s} psi_topk={topk_s} "
         f"分数={float(state.get('current_score', 0.0)):.3f} "
         f"最好={float(state.get('best_score', 0.0)):.3f} "

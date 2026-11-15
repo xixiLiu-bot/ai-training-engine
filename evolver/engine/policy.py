@@ -80,6 +80,9 @@ def decide(state, diagnosis, cfg, agent=None, memory=None,
         # rich prompt 需要这两个信号：平均值分不出"整体老化"和"个别传感器坏了"
         "psi_ratio": getattr(state, "psi_ratio", None),
         "psi_topk": getattr(state, "psi_topk", None),
+        # rich prompt 需要基准来把 PSI 表达成"相对倍数"，避免绝对数跨数据集失效
+        "psi_low": float(getattr(cfg, "psi_low", 0.0)),
+        "psi_mid": float(getattr(cfg, "psi_mid", 0.0)),
     }
 
     sug = agent.suggest(state_dict, diagnosis, llm_catalog, base["action"])
